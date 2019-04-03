@@ -168,7 +168,9 @@ func DeleteResource(r rest.GracefulDeleter, allowsOptions bool, scope *RequestSc
 			}
 		}
 
+		trace.Step("Step aaa")
 		transformResponseObject(ctx, scope, trace, req, w, status, outputMediaType, result)
+		trace.Step("transformResponseObject done")
 	}
 }
 

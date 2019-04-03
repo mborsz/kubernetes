@@ -20,6 +20,7 @@ package grpc
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/transport"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // StreamHandler defines the handler called by gRPC server to complete the
@@ -135,6 +137,10 @@ func NewClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 }
 
 func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, method string, opts ...CallOption) (_ ClientStream, err error) {
+	utrace := utiltrace.New(fmt.Sprintf("newClientStream %s", method))
+	defer utrace.LogIfLong(500 * time.Millisecond)
+
+	utrace.Step("STEP 1")
 	if channelz.IsOn() {
 		cc.incrCallsStarted()
 		defer func() {
@@ -148,6 +154,8 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	if mc.WaitForReady != nil {
 		c.failFast = !*mc.WaitForReady
 	}
+
+	utrace.Step("STEP 2")
 
 	// Possible context leak:
 	// The cancel function for the child context we create will only be called
@@ -176,6 +184,8 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 	if err := setCallInfoCodec(c); err != nil {
 		return nil, err
 	}
+
+	utrace.Step("STEP 3")
 
 	callHdr := &transport.CallHdr{
 		Host:   cc.authority,
@@ -228,6 +238,8 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 			}
 		}()
 	}
+
+	utrace.Step("STEP 4")
 	ctx = newContextWithRPCInfo(ctx, c.failFast)
 	sh := cc.dopts.copts.StatsHandler
 	var beginTime time.Time
@@ -254,6 +266,7 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}()
 	}
 
+	utrace.Step("STEP 5")
 	var (
 		t    transport.ClientTransport
 		s    *transport.Stream
@@ -290,6 +303,8 @@ func newClientStream(ctx context.Context, desc *StreamDesc, cc *ClientConn, meth
 		}
 		break
 	}
+
+	utrace.Step("STEP 6")
 
 	cs := &clientStream{
 		opts:   opts,
@@ -510,6 +525,9 @@ func (a *csAttempt) sendMsg(m interface{}) (err error) {
 }
 
 func (a *csAttempt) recvMsg(m interface{}) (err error) {
+	utrace := utiltrace.New(fmt.Sprintf("recvMsg in transport %T %p", a.t, a.t))
+	defer utrace.LogIfLong(500 * time.Millisecond)
+	utrace.Step("Defer called 1")
 	cs := a.cs
 	defer func() {
 		if err != nil || !cs.desc.ServerStreams {
@@ -517,6 +535,7 @@ func (a *csAttempt) recvMsg(m interface{}) (err error) {
 			cs.finish(err)
 		}
 	}()
+	utrace.Step("Defer called 2")
 	var inPayload *stats.InPayload
 	if a.statsHandler != nil {
 		inPayload = &stats.InPayload{
@@ -539,7 +558,9 @@ func (a *csAttempt) recvMsg(m interface{}) (err error) {
 		// Only initialize this state once per stream.
 		a.decompSet = true
 	}
+	utrace.Step("a.decompSet if finished")
 	err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.c.maxReceiveMessageSize, inPayload, a.decomp)
+	utrace.Step("recv done")
 	if err != nil {
 		if err == io.EOF {
 			if statusErr := a.s.Status().Err(); statusErr != nil {
@@ -549,6 +570,7 @@ func (a *csAttempt) recvMsg(m interface{}) (err error) {
 		}
 		return toRPCErr(err)
 	}
+	utrace.Step("STEP 1")
 	if EnableTracing {
 		a.mu.Lock()
 		if a.trInfo.tr != nil {
@@ -556,12 +578,15 @@ func (a *csAttempt) recvMsg(m interface{}) (err error) {
 		}
 		a.mu.Unlock()
 	}
+	utrace.Step("STEP 2")
 	if inPayload != nil {
 		a.statsHandler.HandleRPC(a.ctx, inPayload)
 	}
+	utrace.Step("STEP 3")
 	if channelz.IsOn() {
 		a.t.IncrMsgRecv()
 	}
+	utrace.Step("STEP 4")
 	if cs.desc.ServerStreams {
 		// Subsequent messages should be received by subsequent RecvMsg calls.
 		return nil
@@ -570,6 +595,7 @@ func (a *csAttempt) recvMsg(m interface{}) (err error) {
 	// Special handling for non-server-stream rpcs.
 	// This recv expects EOF or errors, so we don't collect inPayload.
 	err = recv(a.p, cs.codec, a.s, a.dc, m, *cs.c.maxReceiveMessageSize, nil, a.decomp)
+	utrace.Step("recv 2 done")
 	if err == nil {
 		return toRPCErr(errors.New("grpc: client streaming protocol violation: get <nil>, want <EOF>"))
 	}

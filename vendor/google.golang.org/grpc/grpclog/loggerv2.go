@@ -123,11 +123,11 @@ func newLoggerV2() LoggerV2 {
 
 	logLevel := os.Getenv("GRPC_GO_LOG_SEVERITY_LEVEL")
 	switch logLevel {
-	case "", "ERROR", "error": // If env is unset, set level to ERROR.
+	case "ERROR", "error": // If env is unset, set level to ERROR.
 		errorW = os.Stderr
 	case "WARNING", "warning":
 		warningW = os.Stderr
-	case "INFO", "info":
+	case "", "INFO", "info":
 		infoW = os.Stderr
 	}
 

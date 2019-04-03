@@ -19,9 +19,11 @@
 package grpc
 
 import (
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/balancer"
@@ -32,6 +34,7 @@ import (
 	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/transport"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // pickerWrapper is a wrapper of balancer.Picker. It blocks on certain pick
@@ -131,10 +134,13 @@ func doneChannelzWrapper(acw *acBalancerWrapper, done func(balancer.DoneInfo)) f
 // - the subConn returned by the current picker is not READY
 // When one of these situations happens, pick blocks until the picker gets updated.
 func (bp *pickerWrapper) pick(ctx context.Context, failfast bool, opts balancer.PickOptions) (transport.ClientTransport, func(balancer.DoneInfo), error) {
+	trace := utiltrace.New(fmt.Sprintf("pick"))
+	defer trace.LogIfLong(100 * time.Millisecond)
 
 	mdKey := bp.getStickinessMDKey()
 	stickyKey, isSticky := stickyKeyFromContext(ctx, mdKey)
 
+	trace.Step("STEP 1")
 	// Potential race here: if stickinessMDKey is updated after the above two
 	// lines, and this pick is a sticky pick, the following put could add an
 	// entry to sticky store with an outdated sticky key.
@@ -152,13 +158,17 @@ func (bp *pickerWrapper) pick(ctx context.Context, failfast bool, opts balancer.
 		}
 	}
 
+	trace.Step("STEP 2")
+
 	var (
 		p  balancer.Picker
 		ch chan struct{}
 	)
 
 	for {
+		trace.Step("LOOK START")
 		bp.mu.Lock()
+		trace.Step("GOT LOCK")
 		if bp.done {
 			bp.mu.Unlock()
 			return nil, nil, ErrClientConnClosing
@@ -184,8 +194,10 @@ func (bp *pickerWrapper) pick(ctx context.Context, failfast bool, opts balancer.
 		p = bp.picker
 		bp.mu.Unlock()
 
+		trace.Step("ABout to call Pick")
 		subConn, done, err := p.Pick(ctx, opts)
 
+		trace.Step("Picked")
 		if err != nil {
 			switch err {
 			case balancer.ErrNoSubConnAvailable:

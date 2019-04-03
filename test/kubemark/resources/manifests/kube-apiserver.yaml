@@ -9,6 +9,11 @@ spec:
   - name: kube-apiserver
     image: {{kube_docker_registry}}/kube-apiserver:{{kube-apiserver_docker_tag}}
     imagePullPolicy: IfNotPresent
+    env:
+      - name: GRPC_GO_LOG_SEVERITY_LEVEL
+        value: INFO
+      - name: GRPC_GO_LOG_VERBOSITY_LEVEL
+        value: "99"
     resources:
       requests:
         cpu: 250m

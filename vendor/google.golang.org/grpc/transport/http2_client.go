@@ -19,6 +19,7 @@
 package transport
 
 import (
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -39,6 +40,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // http2Client implements the ClientTransport interface with HTTP2.
@@ -1133,10 +1135,12 @@ func (t *http2Client) reader() {
 	// loop to keep reading incoming messages on this transport.
 	for {
 		frame, err := t.framer.fr.ReadFrame()
+		utrace := utiltrace.New(fmt.Sprintf("recvMsg in transport %T %p: %v -> %v", t, t, t.localAddr, t.remoteAddr))
 		if t.keepaliveEnabled {
 			atomic.CompareAndSwapUint32(&t.activity, 0, 1)
 		}
 		if err != nil {
+			utrace.Step("error path start")
 			// Abort an active stream if the http2.Framer returns a
 			// http2.StreamError. This can happen only if the server's response
 			// is malformed http2.
@@ -1148,31 +1152,44 @@ func (t *http2Client) reader() {
 					// use error detail to provide better err message
 					t.closeStream(s, streamErrorf(http2ErrConvTab[se.Code], "%v", t.framer.fr.ErrorDetail()), true, http2.ErrCodeProtocol, nil, nil, false)
 				}
+				utrace.Step("closeStream done")
+				utrace.LogIfLong(100 * time.Millisecond)
 				continue
 			} else {
 				// Transport error.
 				t.Close()
+				utrace.Step("t.Close done")
+				utrace.LogIfLong(100 * time.Millisecond)
 				return
 			}
 		}
+		utrace.Step("switch start")
 		switch frame := frame.(type) {
 		case *http2.MetaHeadersFrame:
 			t.operateHeaders(frame)
+			utrace.Step("operateHeaders done")
 		case *http2.DataFrame:
 			t.handleData(frame)
+			utrace.Step("handleData done")
 		case *http2.RSTStreamFrame:
 			t.handleRSTStream(frame)
+			utrace.Step("handleRSTStream done")
 		case *http2.SettingsFrame:
 			t.handleSettings(frame, false)
+			utrace.Step("http2.SettingsFrame done")
 		case *http2.PingFrame:
 			t.handlePing(frame)
+			utrace.Step("handlePing done")
 		case *http2.GoAwayFrame:
 			t.handleGoAway(frame)
+			utrace.Step("handleGoAway done")
 		case *http2.WindowUpdateFrame:
 			t.handleWindowUpdate(frame)
+			utrace.Step("handleWindowUpdate done")
 		default:
 			errorf("transport: http2Client.reader got unhandled frame type %v.", frame)
 		}
+		utrace.LogIfLong(100 * time.Millisecond)
 	}
 }
 

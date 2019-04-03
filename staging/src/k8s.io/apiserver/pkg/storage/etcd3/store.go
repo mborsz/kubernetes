@@ -110,11 +110,16 @@ func (s *store) Versioner() storage.Versioner {
 
 // Get implements storage.Interface.Get.
 func (s *store) Get(ctx context.Context, key string, resourceVersion string, out runtime.Object, ignoreNotFound bool) error {
+	trace := utiltrace.New(fmt.Sprintf("store.Get %s", key))
+	defer trace.LogIfLong(500 * time.Millisecond)
+
 	key = path.Join(s.pathPrefix, key)
+	trace.Step("path.Join done")
 	getResp, err := s.client.KV.Get(ctx, key, s.getOps...)
 	if err != nil {
 		return err
 	}
+	trace.Step("s.client.KV.Get done")
 
 	if len(getResp.Kvs) == 0 {
 		if ignoreNotFound {
@@ -124,43 +129,56 @@ func (s *store) Get(ctx context.Context, key string, resourceVersion string, out
 	}
 	kv := getResp.Kvs[0]
 
+	trace.Step("some if done")
 	data, _, err := s.transformer.TransformFromStorage(kv.Value, authenticatedDataString(key))
 	if err != nil {
 		return storage.NewInternalError(err.Error())
 	}
+
+	trace.Step("TransformFromStorage done")
 
 	return decode(s.codec, s.versioner, data, out, kv.ModRevision)
 }
 
 // Create implements storage.Interface.Create.
 func (s *store) Create(ctx context.Context, key string, obj, out runtime.Object, ttl uint64) error {
+	trace := utiltrace.New(fmt.Sprintf("store.Create %s", key))
+	defer trace.LogIfLong(500 * time.Millisecond)
 	if version, err := s.versioner.ObjectResourceVersion(obj); err == nil && version != 0 {
 		return errors.New("resourceVersion should not be set on objects to be created")
 	}
 	if err := s.versioner.PrepareObjectForStorage(obj); err != nil {
 		return fmt.Errorf("PrepareObjectForStorage failed: %v", err)
 	}
+	trace.Step("STEP 1")
 	data, err := runtime.Encode(s.codec, obj)
 	if err != nil {
 		return err
 	}
 	key = path.Join(s.pathPrefix, key)
+	trace.Step("STEP 2")
 
 	opts, err := s.ttlOpts(ctx, int64(ttl))
 	if err != nil {
 		return err
 	}
 
+	trace.Step("ttlOpts done")
+
 	newData, err := s.transformer.TransformToStorage(data, authenticatedDataString(key))
 	if err != nil {
 		return storage.NewInternalError(err.Error())
 	}
+
+	trace.Step("TransformToStorage done")
 
 	txnResp, err := s.client.KV.Txn(ctx).If(
 		notFound(key),
 	).Then(
 		clientv3.OpPut(key, string(newData), opts...),
 	).Commit()
+
+	trace.Step("client Commit done")
 	if err != nil {
 		return err
 	}
@@ -172,6 +190,7 @@ func (s *store) Create(ctx context.Context, key string, obj, out runtime.Object,
 		putResp := txnResp.Responses[0].GetResponsePut()
 		return decode(s.codec, s.versioner, data, out, putResp.Header.Revision)
 	}
+	trace.Step("decode done")
 	return nil
 }
 
@@ -189,12 +208,15 @@ func (s *store) Delete(ctx context.Context, key string, out runtime.Object, prec
 }
 
 func (s *store) unconditionalDelete(ctx context.Context, key string, out runtime.Object) error {
+	trace := utiltrace.New(fmt.Sprintf("unconditionalDelete %s", key))
+	defer trace.LogIfLong(500 * time.Millisecond)
 	// We need to do get and delete in single transaction in order to
 	// know the value and revision before deleting it.
 	txnResp, err := s.client.KV.Txn(ctx).If().Then(
 		clientv3.OpGet(key),
 		clientv3.OpDelete(key),
 	).Commit()
+	trace.Step("Txn.Commit done")
 	if err != nil {
 		return err
 	}
@@ -208,14 +230,18 @@ func (s *store) unconditionalDelete(ctx context.Context, key string, out runtime
 	if err != nil {
 		return storage.NewInternalError(err.Error())
 	}
+	trace.Step("TransformFromStorage done")
 	return decode(s.codec, s.versioner, data, out, kv.ModRevision)
 }
 
 func (s *store) conditionalDelete(ctx context.Context, key string, out runtime.Object, v reflect.Value, preconditions *storage.Preconditions) error {
+	trace := utiltrace.New(fmt.Sprintf("conditionalDelete %s", key))
+	defer trace.LogIfLong(500 * time.Millisecond)
 	getResp, err := s.client.KV.Get(ctx, key)
 	if err != nil {
 		return err
 	}
+	trace.Step("Get done")
 	for {
 		origState, err := s.getState(getResp, key, v, false)
 		if err != nil {
@@ -224,6 +250,7 @@ func (s *store) conditionalDelete(ctx context.Context, key string, out runtime.O
 		if err := preconditions.Check(key, origState.obj); err != nil {
 			return err
 		}
+		trace.Step("TXN start")
 		txnResp, err := s.client.KV.Txn(ctx).If(
 			clientv3.Compare(clientv3.ModRevision(key), "=", origState.rev),
 		).Then(
@@ -231,6 +258,7 @@ func (s *store) conditionalDelete(ctx context.Context, key string, out runtime.O
 		).Else(
 			clientv3.OpGet(key),
 		).Commit()
+		trace.Step("TXN done")
 		if err != nil {
 			return err
 		}
@@ -757,15 +785,21 @@ func (s *store) ttlOpts(ctx context.Context, ttl int64) ([]clientv3.OpOption, er
 // decode decodes value of bytes into object. It will also set the object resource version to rev.
 // On success, objPtr would be set to the object.
 func decode(codec runtime.Codec, versioner storage.Versioner, value []byte, objPtr runtime.Object, rev int64) error {
+	trace := utiltrace.New(fmt.Sprintf("decode call"))
+	defer trace.LogIfLong(500 * time.Millisecond)
+	trace.Step("defer done")
 	if _, err := conversion.EnforcePtr(objPtr); err != nil {
 		panic("unable to convert output object to pointer")
 	}
+	trace.Step("EnforcePtr")
 	_, _, err := codec.Decode(value, nil, objPtr)
 	if err != nil {
 		return err
 	}
+	trace.Step("Decode done")
 	// being unable to set the version does not prevent the object from being extracted
 	versioner.UpdateObject(objPtr, uint64(rev))
+	trace.Step("UpdateObj done")
 	return nil
 }
 

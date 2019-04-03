@@ -19,7 +19,11 @@
 package grpc
 
 import (
+	"fmt"
+	"time"
+
 	"golang.org/x/net/context"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // Invoke sends the RPC request on the wire and returns after response is
@@ -66,11 +70,16 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 	// TODO: implement retries in clientStream and make this simply
 	// newClientStream, SendMsg, RecvMsg.
 	firstAttempt := true
+	trace := utiltrace.New(fmt.Sprintf("invoke %s %v", method, req))
+	defer trace.LogIfLong(500 * time.Millisecond)
+
 	for {
+		trace.Step("newClientStream START")
 		csInt, err := newClientStream(ctx, unaryStreamDesc, cc, method, opts...)
 		if err != nil {
 			return err
 		}
+		trace.Step("newClientStream END")
 		cs := csInt.(*clientStream)
 		if err := cs.SendMsg(req); err != nil {
 			if !cs.c.failFast && cs.attempt.s.Unprocessed() && firstAttempt {
@@ -80,6 +89,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 			}
 			return err
 		}
+		trace.Step("SendMsg DONE")
 		if err := cs.RecvMsg(reply); err != nil {
 			if !cs.c.failFast && cs.attempt.s.Unprocessed() && firstAttempt {
 				// TODO: Add a field to header for grpc-transparent-retry-attempts
@@ -88,6 +98,7 @@ func invoke(ctx context.Context, method string, req, reply interface{}, cc *Clie
 			}
 			return err
 		}
+		trace.Step("RecvMsg DONE")
 		return nil
 	}
 }

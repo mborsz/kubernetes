@@ -52,6 +52,7 @@ func UpdateResource(r rest.Updater, scope *RequestScope, admit admission.Interfa
 			scope.err(errors.NewBadRequest("the dryRun alpha feature is disabled"), w, req)
 			return
 		}
+		trace.Step("STEP 1")
 
 		// TODO: we either want to remove timeout or document it (if we document, move timeout out of this function and declare it in api_installer)
 		timeout := parseTimeout(req.URL.Query().Get("timeout"))
@@ -64,11 +65,14 @@ func UpdateResource(r rest.Updater, scope *RequestScope, admit admission.Interfa
 		ctx := req.Context()
 		ctx = request.WithNamespace(ctx, namespace)
 
+		trace.Step("STEP 2")
 		outputMediaType, _, err := negotiation.NegotiateOutputMediaType(req, scope.Serializer, scope)
 		if err != nil {
 			scope.err(err, w, req)
 			return
 		}
+
+		trace.Step("STEP 3")
 
 		body, err := limitedReadBody(req, scope.MaxRequestBodyBytes)
 		if err != nil {
@@ -76,17 +80,21 @@ func UpdateResource(r rest.Updater, scope *RequestScope, admit admission.Interfa
 			return
 		}
 
+		trace.Step("STEP 4")
 		options := &metav1.UpdateOptions{}
 		if err := metainternalversion.ParameterCodec.DecodeParameters(req.URL.Query(), scope.MetaGroupVersion, options); err != nil {
 			err = errors.NewBadRequest(err.Error())
 			scope.err(err, w, req)
 			return
 		}
+		trace.Step("STEP 5")
+
 		if errs := validation.ValidateUpdateOptions(options); len(errs) > 0 {
 			err := errors.NewInvalid(schema.GroupKind{Group: metav1.GroupName, Kind: "UpdateOptions"}, "", errs)
 			scope.err(err, w, req)
 			return
 		}
+		trace.Step("STEP 6")
 
 		s, err := negotiation.NegotiateInputSerializer(req, false, scope.Serializer)
 		if err != nil {

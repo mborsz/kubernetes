@@ -158,26 +158,26 @@ func (b *healthBalancer) pinned() string {
 
 func (b *healthBalancer) hostPortError(hostPort string, err error) {
 	if b.endpoint(hostPort) == "" {
-		logger.Lvl(4).Infof("clientv3/balancer: %q is stale (skip marking as unhealthy on %q)", hostPort, err.Error())
+		logger.Infof("clientv3/balancer: %q is stale (skip marking as unhealthy on %q)", hostPort, err.Error())
 		return
 	}
 
 	b.unhealthyMu.Lock()
 	b.unhealthyHostPorts[hostPort] = time.Now()
 	b.unhealthyMu.Unlock()
-	logger.Lvl(4).Infof("clientv3/balancer: %q is marked unhealthy (%q)", hostPort, err.Error())
+	logger.Infof("clientv3/balancer: %q is marked unhealthy (%q)", hostPort, err.Error())
 }
 
 func (b *healthBalancer) removeUnhealthy(hostPort, msg string) {
 	if b.endpoint(hostPort) == "" {
-		logger.Lvl(4).Infof("clientv3/balancer: %q was not in unhealthy (%q)", hostPort, msg)
+		logger.Infof("clientv3/balancer: %q was not in unhealthy (%q)", hostPort, msg)
 		return
 	}
 
 	b.unhealthyMu.Lock()
 	delete(b.unhealthyHostPorts, hostPort)
 	b.unhealthyMu.Unlock()
-	logger.Lvl(4).Infof("clientv3/balancer: %q is removed from unhealthy (%q)", hostPort, msg)
+	logger.Infof("clientv3/balancer: %q is removed from unhealthy (%q)", hostPort, msg)
 }
 
 func (b *healthBalancer) countUnhealthy() (count int) {
@@ -199,7 +199,7 @@ func (b *healthBalancer) cleanupUnhealthy() {
 	for k, v := range b.unhealthyHostPorts {
 		if time.Since(v) > b.healthCheckTimeout {
 			delete(b.unhealthyHostPorts, k)
-			logger.Lvl(4).Infof("clientv3/balancer: removed %q from unhealthy after %v", k, b.healthCheckTimeout)
+			logger.Infof("clientv3/balancer: removed %q from unhealthy after %v", k, b.healthCheckTimeout)
 		}
 	}
 	b.unhealthyMu.Unlock()

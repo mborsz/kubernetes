@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/transport"
+	utiltrace "k8s.io/utils/trace"
 )
 
 // Compressor defines the interface gRPC uses to compress a message.
@@ -449,11 +450,16 @@ type parser struct {
 // that the underlying io.Reader must not return an incompatible
 // error.
 func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byte, err error) {
+	utrace := utiltrace.New(fmt.Sprintf("parser.recvMsg: %v", p.r))
+	defer utrace.LogIfLong(500 * time.Millisecond)
+	utrace.Step("defer done")
 	if _, err := p.r.Read(p.header[:]); err != nil {
 		return 0, nil, err
 	}
 
+	utrace.Step("p.r.Read done")
 	pf = payloadFormat(p.header[0])
+	utrace.Step("payloadFormat done")
 	length := binary.BigEndian.Uint32(p.header[1:])
 
 	if length == 0 {
@@ -467,13 +473,16 @@ func (p *parser) recvMsg(maxReceiveMessageSize int) (pf payloadFormat, msg []byt
 	}
 	// TODO(bradfitz,zhaoq): garbage. reuse buffer after proto decoding instead
 	// of making it for each message:
+	utrace.Step("before make byte")
 	msg = make([]byte, int(length))
+	utrace.Step("after make byte")
 	if _, err := p.r.Read(msg); err != nil {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF
 		}
 		return 0, nil, err
 	}
+	utrace.Step("p.r.Read 2 done")
 	return pf, msg, nil
 }
 
@@ -575,7 +584,11 @@ func checkRecvPayload(pf payloadFormat, recvCompress string, haveCompressor bool
 // dc takes precedence over compressor.
 // TODO(dfawley): wrap the old compressor/decompressor using the new API?
 func recv(p *parser, c baseCodec, s *transport.Stream, dc Decompressor, m interface{}, maxReceiveMessageSize int, inPayload *stats.InPayload, compressor encoding.Compressor) error {
+	utrace := utiltrace.New("recv")
+	defer utrace.LogIfLong(500 * time.Millisecond)
+	utrace.Step("Defer called 1")
 	pf, d, err := p.recvMsg(maxReceiveMessageSize)
+	utrace.Step("recvMsg done")
 	if err != nil {
 		return err
 	}
@@ -583,10 +596,12 @@ func recv(p *parser, c baseCodec, s *transport.Stream, dc Decompressor, m interf
 		inPayload.WireLength = len(d)
 	}
 
+	utrace.Step("STEP 1")
 	if st := checkRecvPayload(pf, s.RecvCompress(), compressor != nil || dc != nil); st != nil {
 		return st.Err()
 	}
 
+	utrace.Step("STEP 2")
 	if pf == compressionMade {
 		// To match legacy behavior, if the decompressor is set by WithDecompressor or RPCDecompressor,
 		// use this decompressor as the default.
@@ -606,14 +621,20 @@ func recv(p *parser, c baseCodec, s *transport.Stream, dc Decompressor, m interf
 			}
 		}
 	}
+
+	utrace.Step("STEP 3")
 	if len(d) > maxReceiveMessageSize {
 		// TODO: Revisit the error code. Currently keep it consistent with java
 		// implementation.
 		return status.Errorf(codes.ResourceExhausted, "grpc: received message larger than max (%d vs. %d)", len(d), maxReceiveMessageSize)
 	}
+
+	utrace.Step("STEP 4")
 	if err := c.Unmarshal(d, m); err != nil {
 		return status.Errorf(codes.Internal, "grpc: failed to unmarshal the received message %v", err)
 	}
+
+	utrace.Step("STEP 5")
 	if inPayload != nil {
 		inPayload.RecvTime = time.Now()
 		inPayload.Payload = m

@@ -16,7 +16,7 @@ spec:
     - /bin/sh
     - -c
     - /usr/local/bin/etcd
-      {{params}}
+      {{params}} --debug
       1>>/var/log/etcd.log 2>&1
     livenessProbe:
       httpGet:
