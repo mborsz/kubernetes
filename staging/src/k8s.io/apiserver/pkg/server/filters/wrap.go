@@ -44,5 +44,11 @@ func withPanicRecovery(handler http.Handler, crashHandler func(http.ResponseWrit
 
 		// Dispatch to the internal handler
 		handler.ServeHTTP(w, req)
+		
+		// Flush all buffers in w before we log.
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		
 	})
 }
