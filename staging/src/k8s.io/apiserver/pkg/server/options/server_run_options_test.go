@@ -77,6 +77,21 @@ func TestServerRunOptionsValidate(t *testing.T) {
 			expectErr: "--max-mutating-requests-inflight can not be negative value",
 		},
 		{
+			name: "Test when MaxMetricsRequestsInFlight is negative value",
+			testOptions: &ServerRunOptions{
+				AdvertiseAddress:           net.ParseIP("192.168.10.10"),
+				CorsAllowedOriginList:      []string{"10.10.10.100", "10.10.10.200"},
+				MaxRequestsInFlight:        400,
+				MaxMetricsRequestsInFlight: -200,
+				RequestTimeout:             time.Duration(2) * time.Minute,
+				MinRequestTimeout:          1800,
+				JSONPatchMaxCopyBytes:      10 * 1024 * 1024,
+				MaxRequestBodyBytes:        10 * 1024 * 1024,
+				TargetRAMMB:                65536,
+			},
+			expectErr: "--max-metrics-requests-inflight can not be negative value",
+		},
+		{
 			name: "Test when RequestTimeout is negative value",
 			testOptions: &ServerRunOptions{
 				AdvertiseAddress:            net.ParseIP("192.168.10.10"),

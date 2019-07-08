@@ -179,6 +179,8 @@ const (
 	ReadOnlyKind = "readOnly"
 	// MutatingKind is a string identifying mutating request kind
 	MutatingKind = "mutating"
+	// MetricsKind is a string identifying metrics request kind
+	MetricsKind = "metrics"
 )
 
 var registerMetrics sync.Once
@@ -199,9 +201,10 @@ func Reset() {
 	}
 }
 
-func UpdateInflightRequestMetrics(nonmutating, mutating int) {
-	currentInflightRequests.WithLabelValues(ReadOnlyKind).Set(float64(nonmutating))
-	currentInflightRequests.WithLabelValues(MutatingKind).Set(float64(mutating))
+func UpdateInflightRequestMetrics(watermark map[string]int) {
+	for requestKind, val := range watermark {
+		currentInflightRequests.WithLabelValues(requestKind).Set(float64(val))
+	}
 }
 
 // Record records a single request to the standard metrics endpoints. For use by handlers that perform their own

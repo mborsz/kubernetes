@@ -30,7 +30,7 @@ import (
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
 )
 
-func createMaxInflightServer(callsWg, blockWg *sync.WaitGroup, disableCallsWg *bool, disableCallsWgMutex *sync.Mutex, nonMutating, mutating int) *httptest.Server {
+func createMaxInflightServer(callsWg, blockWg *sync.WaitGroup, disableCallsWg *bool, disableCallsWgMutex *sync.Mutex, nonMutating, mutating, metrics int) *httptest.Server {
 	longRunningRequestCheck := BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString("proxy"))
 
 	requestInfoFactory := &apirequest.RequestInfoFactory{APIPrefixes: sets.NewString("apis", "api"), GrouplessAPIPrefixes: sets.NewString("api")}
@@ -50,6 +50,7 @@ func createMaxInflightServer(callsWg, blockWg *sync.WaitGroup, disableCallsWg *b
 		}),
 		nonMutating,
 		mutating,
+		metrics,
 		longRunningRequestCheck,
 	)
 	handler = withFakeUser(handler)
@@ -100,7 +101,7 @@ func TestMaxInFlightNonMutating(t *testing.T) {
 	waitForCalls := true
 	waitForCallsMutex := sync.Mutex{}
 
-	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, AllowedNonMutatingInflightRequestsNo, 1)
+	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, AllowedNonMutatingInflightRequestsNo, 1, 0)
 	defer server.Close()
 
 	// These should hang, but not affect accounting.  use a query param match
@@ -180,7 +181,7 @@ func TestMaxInFlightMutating(t *testing.T) {
 	waitForCalls := true
 	waitForCallsMutex := sync.Mutex{}
 
-	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, 1, AllowedMutatingInflightRequestsNo)
+	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, 1, AllowedMutatingInflightRequestsNo, 0)
 	defer server.Close()
 
 	// These should hang and be accounted, i.e. saturate the server
@@ -272,7 +273,7 @@ func TestMaxInFlightSkipsMasters(t *testing.T) {
 	waitForCalls := true
 	waitForCallsMutex := sync.Mutex{}
 
-	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, 1, AllowedMutatingInflightRequestsNo)
+	server := createMaxInflightServer(calls, block, &waitForCalls, &waitForCallsMutex, 1, AllowedMutatingInflightRequestsNo, 0)
 	defer server.Close()
 
 	// These should hang and be accounted, i.e. saturate the server

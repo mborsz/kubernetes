@@ -40,6 +40,7 @@ type ServerRunOptions struct {
 	ExternalHost                string
 	MaxRequestsInFlight         int
 	MaxMutatingRequestsInFlight int
+	MaxMetricsRequestsInFlight  int
 	RequestTimeout              time.Duration
 	MaxStartupSequenceDuration  time.Duration
 	MinRequestTimeout           int
@@ -60,6 +61,7 @@ func NewServerRunOptions() *ServerRunOptions {
 	return &ServerRunOptions{
 		MaxRequestsInFlight:         defaults.MaxRequestsInFlight,
 		MaxMutatingRequestsInFlight: defaults.MaxMutatingRequestsInFlight,
+		MaxMetricsRequestsInFlight:  defaults.MaxMetricsRequestsInFlight,
 		RequestTimeout:              defaults.RequestTimeout,
 		MaxStartupSequenceDuration:  defaults.MaxStartupSequenceDuration,
 		MinRequestTimeout:           defaults.MinRequestTimeout,
@@ -126,12 +128,19 @@ func (s *ServerRunOptions) Validate() []error {
 			errors = append(errors, fmt.Errorf("--max-requests-inflight=%v "+
 				"can not be set if enabled inflight quota handler", s.MaxRequestsInFlight))
 		}
+		if s.MaxMetricsRequestsInFlight != 0 {
+			errors = append(errors, fmt.Errorf("--max-metrics-request-inflight=%v "+
+				"can not be set if enabled inflight quota handler", s.MaxMetricsRequestsInFlight))
+		}
 	} else {
 		if s.MaxRequestsInFlight < 0 {
 			errors = append(errors, fmt.Errorf("--max-requests-inflight can not be negative value"))
 		}
 		if s.MaxMutatingRequestsInFlight < 0 {
 			errors = append(errors, fmt.Errorf("--max-mutating-requests-inflight can not be negative value"))
+		}
+		if s.MaxMetricsRequestsInFlight < 0 {
+			errors = append(errors, fmt.Errorf("--max-metrics-requests-inflight can not be negative value"))
 		}
 	}
 
@@ -186,6 +195,10 @@ func (s *ServerRunOptions) AddUniversalFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&s.MaxMutatingRequestsInFlight, "max-mutating-requests-inflight", s.MaxMutatingRequestsInFlight, ""+
 		"The maximum number of mutating requests in flight at a given time. When the server exceeds this, "+
 		"it rejects requests. Zero for no limit.")
+
+	fs.IntVar(&s.MaxMetricsRequestsInFlight, "max-metrics-requests-inflight", s.MaxMetricsRequestsInFlight, ""+
+		"The maximum number of requests to /metrics endpoint in flight at a given time. When the server exceeds "+
+		"this, it rejects requests. Zero for no limit.")
 
 	fs.DurationVar(&s.RequestTimeout, "request-timeout", s.RequestTimeout, ""+
 		"An optional field indicating the duration a handler must keep a request open before timing "+

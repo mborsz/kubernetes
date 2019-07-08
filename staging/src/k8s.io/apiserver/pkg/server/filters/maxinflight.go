@@ -52,41 +52,32 @@ func handleError(w http.ResponseWriter, r *http.Request, err error) {
 
 // requestWatermark is used to trak maximal usage of inflight requests.
 type requestWatermark struct {
-	lock                                 sync.Mutex
-	readOnlyWatermark, mutatingWatermark int
+	lock sync.Mutex
+	// Maps requestKind -> watermark
+	watermark map[string]int
 }
 
-func (w *requestWatermark) recordMutating(mutatingVal int) {
+func (w *requestWatermark) record(requestKind string, val int) {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 
-	if w.mutatingWatermark < mutatingVal {
-		w.mutatingWatermark = mutatingVal
+	cur := w.watermark[requestKind]
+	if cur < val {
+		w.watermark[requestKind] = val
 	}
 }
 
-func (w *requestWatermark) recordReadOnly(readOnlyVal int) {
-	w.lock.Lock()
-	defer w.lock.Unlock()
-
-	if w.readOnlyWatermark < readOnlyVal {
-		w.readOnlyWatermark = readOnlyVal
-	}
-}
-
-var watermark = &requestWatermark{}
+var watermark = &requestWatermark{watermark: make(map[string]int)}
 
 func startRecordingUsage() {
 	go func() {
 		wait.Forever(func() {
 			watermark.lock.Lock()
-			readOnlyWatermark := watermark.readOnlyWatermark
-			mutatingWatermark := watermark.mutatingWatermark
-			watermark.readOnlyWatermark = 0
-			watermark.mutatingWatermark = 0
+			currentWatermark := watermark.watermark
+			watermark.watermark = make(map[string]int)
 			watermark.lock.Unlock()
 
-			metrics.UpdateInflightRequestMetrics(readOnlyWatermark, mutatingWatermark)
+			metrics.UpdateInflightRequestMetrics(currentWatermark)
 		}, inflightUsageMetricUpdatePeriod)
 	}()
 }
@@ -98,6 +89,7 @@ func WithMaxInFlightLimit(
 	handler http.Handler,
 	nonMutatingLimit int,
 	mutatingLimit int,
+	metricsLimit int,
 	longRunningRequestCheck apirequest.LongRunningRequestCheck,
 ) http.Handler {
 	startOnce.Do(startRecordingUsage)
@@ -106,11 +98,15 @@ func WithMaxInFlightLimit(
 	}
 	var nonMutatingChan chan bool
 	var mutatingChan chan bool
+	var metricsChan chan bool
 	if nonMutatingLimit != 0 {
 		nonMutatingChan = make(chan bool, nonMutatingLimit)
 	}
 	if mutatingLimit != 0 {
 		mutatingChan = make(chan bool, mutatingLimit)
+	}
+	if metricsLimit != 0 {
+		metricsChan = make(chan bool, metricsLimit)
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,11 +124,18 @@ func WithMaxInFlightLimit(
 		}
 
 		var c chan bool
+		var requestKind string
+		isMetricsRequest := requestInfo.Path == "/metrics"
 		isMutatingRequest := !nonMutatingRequestVerbs.Has(requestInfo.Verb)
-		if isMutatingRequest {
+		if isMetricsRequest {
+			c = metricsChan
+			requestKind = metrics.MetricsKind
+		} else if isMutatingRequest {
 			c = mutatingChan
+			requestKind = metrics.MutatingKind
 		} else {
 			c = nonMutatingChan
+			requestKind = metrics.ReadOnlyKind
 		}
 
 		if c == nil {
@@ -141,33 +144,17 @@ func WithMaxInFlightLimit(
 
 			select {
 			case c <- true:
-				var mutatingLen, readOnlyLen int
-				if isMutatingRequest {
-					mutatingLen = len(mutatingChan)
-				} else {
-					readOnlyLen = len(nonMutatingChan)
-				}
+				chanLen := len(c)
 
 				defer func() {
 					<-c
-					if isMutatingRequest {
-						watermark.recordMutating(mutatingLen)
-					} else {
-						watermark.recordReadOnly(readOnlyLen)
-					}
-
+					watermark.record(requestKind, chanLen)
 				}()
 				handler.ServeHTTP(w, r)
 
 			default:
-				// We need to split this data between buckets used for throttling.
-				if isMutatingRequest {
-					metrics.DroppedRequests.WithLabelValues(metrics.MutatingKind).Inc()
-					metrics.DeprecatedDroppedRequests.WithLabelValues(metrics.MutatingKind).Inc()
-				} else {
-					metrics.DroppedRequests.WithLabelValues(metrics.ReadOnlyKind).Inc()
-					metrics.DeprecatedDroppedRequests.WithLabelValues(metrics.ReadOnlyKind).Inc()
-				}
+				metrics.DroppedRequests.WithLabelValues(requestKind).Inc()
+				metrics.DeprecatedDroppedRequests.WithLabelValues(requestKind).Inc()
 				// at this point we're about to return a 429, BUT not all actors should be rate limited.  A system:master is so powerful
 				// that they should always get an answer.  It's a super-admin or a loopback connection.
 				if currUser, ok := apirequest.UserFrom(ctx); ok {
