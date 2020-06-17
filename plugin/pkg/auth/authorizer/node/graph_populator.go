@@ -18,10 +18,13 @@ package node
 
 import (
 	"fmt"
+	"time"
+
 	"k8s.io/klog/v2"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	storageinformers "k8s.io/client-go/informers/storage/v1"
@@ -69,6 +72,18 @@ func AddGraphEventHandlers(
 		UpdateFunc: g.updateVolumeAttachment,
 		DeleteFunc: g.deleteVolumeAttachment,
 	})
+
+	go func() {
+		err := wait.PollImmediateUntil(100*time.Millisecond, func() (bool, error) {
+			return pods.Informer().HasSynced(), nil
+		}, wait.NeverStop)
+
+		if err != nil {
+			klog.Warningf("node authorizer: waiting on node authorizer initialization failed with: %v", err)
+			return
+		}
+		klog.Infof("node authorizer pods initialization has been finished")
+	}()
 }
 
 func (g *graphPopulator) addNode(obj interface{}) {

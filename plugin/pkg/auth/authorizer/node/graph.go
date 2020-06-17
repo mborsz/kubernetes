@@ -18,6 +18,7 @@ package node
 
 import (
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	pvutil "k8s.io/kubernetes/pkg/api/v1/persistentvolume"
@@ -94,6 +95,8 @@ type namespaceVertexMapping map[string]nameVertexMapping
 type nameVertexMapping map[string]*namedVertex
 
 func NewGraph() *Graph {
+	RegisterMetrics()
+
 	return &Graph{
 		vertices: map[vertexType]namespaceVertexMapping{},
 		graph:    simple.NewDirectedAcyclicGraph(0, 0),
@@ -332,6 +335,10 @@ func (g *Graph) recomputeDestinationIndex_locked(n graph.Node) {
 //   pvc       -> pod
 //   svcacct   -> pod
 func (g *Graph) AddPod(pod *corev1.Pod) {
+	start := time.Now()
+	defer func() {
+		NodeAuthorizerActionsDuration.WithLabelValues("AddPod").Observe(time.Since(start).Seconds())
+	}()
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
@@ -395,6 +402,10 @@ func (g *Graph) DeletePod(name, namespace string) {
 //
 //   pv -> pvc
 func (g *Graph) AddPV(pv *corev1.PersistentVolume) {
+	start := time.Now()
+	defer func() {
+		NodeAuthorizerActionsDuration.WithLabelValues("AddPV").Observe(time.Since(start).Seconds())
+	}()
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
@@ -417,6 +428,10 @@ func (g *Graph) AddPV(pv *corev1.PersistentVolume) {
 	}
 }
 func (g *Graph) DeletePV(name string) {
+	start := time.Now()
+	defer func() {
+		NodeAuthorizerActionsDuration.WithLabelValues("DeletePV").Observe(time.Since(start).Seconds())
+	}()
 	g.lock.Lock()
 	defer g.lock.Unlock()
 	g.deleteVertex_locked(pvVertexType, "", name)
@@ -426,6 +441,10 @@ func (g *Graph) DeletePV(name string) {
 //
 //   volume attachment -> node
 func (g *Graph) AddVolumeAttachment(attachmentName, nodeName string) {
+	start := time.Now()
+	defer func() {
+		NodeAuthorizerActionsDuration.WithLabelValues("AddVolumeAttachment").Observe(time.Since(start).Seconds())
+	}()
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
@@ -440,6 +459,10 @@ func (g *Graph) AddVolumeAttachment(attachmentName, nodeName string) {
 	}
 }
 func (g *Graph) DeleteVolumeAttachment(name string) {
+	start := time.Now()
+	defer func() {
+		NodeAuthorizerActionsDuration.WithLabelValues("DeleteVolumeAttachment").Observe(time.Since(start).Seconds())
+	}()
 	g.lock.Lock()
 	defer g.lock.Unlock()
 	g.deleteVertex_locked(vaVertexType, "", name)
