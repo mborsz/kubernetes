@@ -14,6 +14,7 @@ go_test(
         "namer_test.go",
         "response_test.go",
         "rest_test.go",
+        "watch_test.go",
     ],
     embed = [":go_default_library"],
     deps = [
