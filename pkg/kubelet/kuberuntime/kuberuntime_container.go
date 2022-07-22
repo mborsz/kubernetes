@@ -177,12 +177,15 @@ func (m *kubeGenericRuntimeManager) startContainer(podSandboxID string, podSandb
 	container := spec.container
 
 	// Step 1: pull the image.
+
+	m.podStartupLatencyTracker.RecordImageStartedPulling(pod.UID)
 	imageRef, msg, err := m.imagePuller.EnsureImageExists(pod, container, pullSecrets, podSandboxConfig)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
 		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
 		return msg, err
 	}
+	m.podStartupLatencyTracker.RecordImageFinishedPulling(pod.UID)
 
 	// Step 2: create the container.
 	// For a new container, the RestartCount should be 0

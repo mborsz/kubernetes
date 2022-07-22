@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
@@ -30,6 +31,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/kubernetes/pkg/kubelet/util"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/util/config"
 )
@@ -130,6 +132,8 @@ type podStorage struct {
 
 	// the EventRecorder to use
 	recorder record.EventRecorder
+
+	podStartupLatencyTracker *util.PodStartupLatencyTracker
 }
 
 // TODO: PodConfigNotificationMode could be handled by a listener to the updates channel
@@ -233,6 +237,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 				ref.Annotations = make(map[string]string)
 			}
 			ref.Annotations[kubetypes.ConfigSourceAnnotationKey] = source
+			s.podStartupLatencyTracker.ObservedPodOnWatch(ref, time.Now() /* Pass time from kubetypes.PodUpdate ? */)
 			if existing, found := oldPods[ref.UID]; found {
 				pods[ref.UID] = existing
 				needUpdate, needReconcile, needGracefulDelete := checkAndUpdatePod(existing, ref)

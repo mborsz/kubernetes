@@ -54,6 +54,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/runtimeclass"
 	"k8s.io/kubernetes/pkg/kubelet/sysctl"
 	"k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/kubernetes/pkg/kubelet/util"
 	"k8s.io/kubernetes/pkg/kubelet/util/cache"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	sc "k8s.io/kubernetes/pkg/securitycontext"
@@ -156,6 +157,8 @@ type kubeGenericRuntimeManager struct {
 
 	// Memory throttling factor for MemoryQoS
 	memoryThrottlingFactor float64
+
+	podStartupLatencyTracker *util.PodStartupLatencyTracker
 }
 
 // KubeGenericRuntime is a interface contains interfaces for container runtime and command.
@@ -194,30 +197,32 @@ func NewKubeGenericRuntimeManager(
 	memorySwapBehavior string,
 	getNodeAllocatable func() v1.ResourceList,
 	memoryThrottlingFactor float64,
+	podStartupLatencyTracker *util.PodStartupLatencyTracker,
 ) (KubeGenericRuntime, error) {
 	runtimeService = newInstrumentedRuntimeService(runtimeService)
 	imageService = newInstrumentedImageManagerService(imageService)
 	kubeRuntimeManager := &kubeGenericRuntimeManager{
-		recorder:               recorder,
-		cpuCFSQuota:            cpuCFSQuota,
-		cpuCFSQuotaPeriod:      cpuCFSQuotaPeriod,
-		seccompProfileRoot:     filepath.Join(rootDirectory, "seccomp"),
-		livenessManager:        livenessManager,
-		readinessManager:       readinessManager,
-		startupManager:         startupManager,
-		machineInfo:            machineInfo,
-		osInterface:            osInterface,
-		runtimeHelper:          runtimeHelper,
-		runtimeService:         runtimeService,
-		imageService:           imageService,
-		internalLifecycle:      internalLifecycle,
-		logManager:             logManager,
-		runtimeClassManager:    runtimeClassManager,
-		logReduction:           logreduction.NewLogReduction(identicalErrorDelay),
-		seccompDefault:         seccompDefault,
-		memorySwapBehavior:     memorySwapBehavior,
-		getNodeAllocatable:     getNodeAllocatable,
-		memoryThrottlingFactor: memoryThrottlingFactor,
+		recorder:                 recorder,
+		cpuCFSQuota:              cpuCFSQuota,
+		cpuCFSQuotaPeriod:        cpuCFSQuotaPeriod,
+		seccompProfileRoot:       filepath.Join(rootDirectory, "seccomp"),
+		livenessManager:          livenessManager,
+		readinessManager:         readinessManager,
+		startupManager:           startupManager,
+		machineInfo:              machineInfo,
+		osInterface:              osInterface,
+		runtimeHelper:            runtimeHelper,
+		runtimeService:           runtimeService,
+		imageService:             imageService,
+		internalLifecycle:        internalLifecycle,
+		logManager:               logManager,
+		runtimeClassManager:      runtimeClassManager,
+		logReduction:             logreduction.NewLogReduction(identicalErrorDelay),
+		seccompDefault:           seccompDefault,
+		memorySwapBehavior:       memorySwapBehavior,
+		getNodeAllocatable:       getNodeAllocatable,
+		memoryThrottlingFactor:   memoryThrottlingFactor,
+		podStartupLatencyTracker: podStartupLatencyTracker,
 	}
 
 	typedVersion, err := kubeRuntimeManager.getTypedVersion()
