@@ -1458,7 +1458,17 @@ func (e *Store) CompleteWithOptions(options *generic.StoreOptions) error {
 		e.StorageVersioner = opts.StorageConfig.EncodeVersioner
 
 		if opts.CountMetricPollPeriod > 0 {
-			stopFunc := e.startObservingCount(opts.CountMetricPollPeriod, opts.StorageObjectCountTracker)
+			var getStorageSize func() int
+			type hasStorageSize interface {
+				StorageSize() int
+			}
+			if withStorageSize, ok := e.Storage.Storage.(hasStorageSize); ok {
+				getStorageSize = withStorageSize.StorageSize
+			} else {
+				klog.Warningf("Cannot get storageSize for resource type %q: %v", e.DefaultQualifiedResource, e.Storage.Storage)
+			}
+
+			stopFunc := e.startObservingCount(opts.CountMetricPollPeriod, getStorageSize, opts.StorageObjectCountTracker)
 			previousDestroy := e.DestroyFunc
 			var once sync.Once
 			e.DestroyFunc = func() {
@@ -1476,12 +1486,15 @@ func (e *Store) CompleteWithOptions(options *generic.StoreOptions) error {
 }
 
 // startObservingCount starts monitoring given prefix and periodically updating metrics. It returns a function to stop collection.
-func (e *Store) startObservingCount(period time.Duration, objectCountTracker flowcontrolrequest.StorageObjectCountTracker) func() {
+func (e *Store) startObservingCount(period time.Duration, getStorageSize func() int, objectCountTracker flowcontrolrequest.StorageObjectCountTracker) func() {
 	prefix := e.KeyRootFunc(genericapirequest.NewContext())
 	resourceName := e.DefaultQualifiedResource.String()
 	klog.V(2).InfoS("Monitoring resource count at path", "resource", resourceName, "path", "<storage-prefix>/"+prefix)
 	stopCh := make(chan struct{})
 	go wait.JitterUntil(func() {
+		if getStorageSize != nil {
+			metrics.UpdateObjectSize(resourceName, getStorageSize())
+		}
 		count, err := e.Storage.Count(prefix)
 		if err != nil {
 			klog.V(5).InfoS("Failed to update storage count metric", "err", err)

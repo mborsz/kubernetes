@@ -55,6 +55,14 @@ var (
 		},
 		[]string{"resource"},
 	)
+	objectSize = compbasemetrics.NewGaugeVec(
+		&compbasemetrics.GaugeOpts{
+			Name:           "apiserver_storage_size",
+			Help:           "Number of stored objects at the time of last check split by kind.",
+			StabilityLevel: compbasemetrics.ALPHA,
+		},
+		[]string{"resource"},
+	)
 	dbTotalSize = compbasemetrics.NewGaugeVec(
 		&compbasemetrics.GaugeOpts{
 			Name:           "etcd_db_total_size_in_bytes",
@@ -122,6 +130,7 @@ func Register() {
 	registerMetrics.Do(func() {
 		legacyregistry.MustRegister(etcdRequestLatency)
 		legacyregistry.MustRegister(objectCounts)
+		legacyregistry.MustRegister(objectSize)
 		legacyregistry.MustRegister(dbTotalSize)
 		legacyregistry.MustRegister(etcdBookmarkCounts)
 		legacyregistry.MustRegister(etcdLeaseObjectCounts)
@@ -135,6 +144,11 @@ func Register() {
 // UpdateObjectCount sets the apiserver_storage_object_counts metric.
 func UpdateObjectCount(resourcePrefix string, count int64) {
 	objectCounts.WithLabelValues(resourcePrefix).Set(float64(count))
+}
+
+// UpdateObjectCount sets the apiserver_storage_object_size metric.
+func UpdateObjectSize(resourcePrefix string, size int) {
+	objectSize.WithLabelValues(resourcePrefix).Set(float64(size))
 }
 
 // RecordEtcdRequestLatency sets the etcd_request_duration_seconds metrics.

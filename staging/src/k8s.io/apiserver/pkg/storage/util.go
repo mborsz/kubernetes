@@ -79,3 +79,15 @@ func (hwm *HighWaterMark) Update(current int64) bool {
 		}
 	}
 }
+
+type ObjectWithStorageSize struct {
+	runtime.Object
+	StorageSize int
+}
+
+func UnwrapObjectWithStorageSize(obj runtime.Object) (runtime.Object, int) {
+	if obj, ok := obj.(*ObjectWithStorageSize); ok {
+		return obj.Object, obj.StorageSize
+	}
+	return obj, 0
+}

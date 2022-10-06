@@ -699,7 +699,7 @@ func (s *store) GetList(ctx context.Context, key string, opts storage.ListOption
 				return storage.NewInternalErrorf("unable to transform key %q: %v", kv.Key, err)
 			}
 
-			if err := appendListItem(v, data, uint64(kv.ModRevision), pred, s.codec, s.versioner, newItemFunc); err != nil {
+			if err := appendListItem(v, data, uint64(kv.ModRevision), pred, s.codec, s.versioner, newItemFunc, opts.WithStorageSize); err != nil {
 				return err
 			}
 			numEvald++
@@ -801,7 +801,7 @@ func (s *store) Watch(ctx context.Context, key string, opts storage.ListOptions)
 		return nil, err
 	}
 	key = path.Join(s.pathPrefix, key)
-	return s.watcher.Watch(ctx, key, int64(rev), opts.Recursive, opts.ProgressNotify, opts.Predicate)
+	return s.watcher.Watch(ctx, key, int64(rev), opts.Recursive, opts.ProgressNotify, opts.WithStorageSize, opts.Predicate)
 }
 
 func (s *store) getState(ctx context.Context, getResp *clientv3.GetResponse, key string, v reflect.Value, ignoreNotFound bool) (*objState, error) {
@@ -931,7 +931,7 @@ func decode(codec runtime.Codec, versioner storage.Versioner, value []byte, objP
 }
 
 // appendListItem decodes and appends the object (if it passes filter) to v, which must be a slice.
-func appendListItem(v reflect.Value, data []byte, rev uint64, pred storage.SelectionPredicate, codec runtime.Codec, versioner storage.Versioner, newItemFunc func() runtime.Object) error {
+func appendListItem(v reflect.Value, data []byte, rev uint64, pred storage.SelectionPredicate, codec runtime.Codec, versioner storage.Versioner, newItemFunc func() runtime.Object, withStorageSize bool) error {
 	obj, _, err := codec.Decode(data, nil, newItemFunc())
 	if err != nil {
 		return err
@@ -940,9 +940,15 @@ func appendListItem(v reflect.Value, data []byte, rev uint64, pred storage.Selec
 	if err := versioner.UpdateObject(obj, rev); err != nil {
 		klog.Errorf("failed to update object version: %v", err)
 	}
-	if matched, err := pred.Matches(obj); err == nil && matched {
-		v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
+	if matched, err := pred.Matches(obj); err != nil || !matched {
+		return nil
 	}
+
+	if withStorageSize {
+		obj = &storage.ObjectWithStorageSize{Object: obj, StorageSize: len(data)}
+	}
+
+	v.Set(reflect.Append(v, reflect.ValueOf(obj).Elem()))
 	return nil
 }
 

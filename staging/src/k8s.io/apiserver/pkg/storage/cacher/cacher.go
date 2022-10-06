@@ -746,6 +746,10 @@ func (c *Cacher) Count(pathPrefix string) (int64, error) {
 	return c.storage.Count(pathPrefix)
 }
 
+func (w *Cacher) StorageSize() int {
+	return w.watchCache.StorageSize()
+}
+
 // baseObjectThreadUnsafe omits locking for cachingObject.
 func baseObjectThreadUnsafe(object runtime.Object) runtime.Object {
 	if co, ok := object.(*cachingObject); ok {
@@ -1121,6 +1125,7 @@ func (lw *cacherListerWatcher) List(options metav1.ListOptions) (runtime.Object,
 		ResourceVersionMatch: options.ResourceVersionMatch,
 		Predicate:            pred,
 		Recursive:            true,
+		WithStorageSize:      true,
 	}
 	if err := lw.storage.GetList(context.TODO(), lw.resourcePrefix, storageOpts, list); err != nil {
 		return nil, err
@@ -1135,6 +1140,7 @@ func (lw *cacherListerWatcher) Watch(options metav1.ListOptions) (watch.Interfac
 		Predicate:       storage.Everything,
 		Recursive:       true,
 		ProgressNotify:  true,
+		WithStorageSize: true,
 	}
 	return lw.storage.Watch(context.TODO(), lw.resourcePrefix, opts)
 }

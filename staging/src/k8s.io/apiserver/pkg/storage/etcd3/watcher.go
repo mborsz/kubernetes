@@ -86,6 +86,7 @@ type watchChan struct {
 	initialRev        int64
 	recursive         bool
 	progressNotify    bool
+	withStorageSize   bool
 	internalPred      storage.SelectionPredicate
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -118,11 +119,11 @@ func newWatcher(client *clientv3.Client, codec runtime.Codec, groupResource sche
 // If recursive is false, it watches on given key.
 // If recursive is true, it watches any children and directories under the key, excluding the root key itself.
 // pred must be non-nil. Only if pred matches the change, it will be returned.
-func (w *watcher) Watch(ctx context.Context, key string, rev int64, recursive, progressNotify bool, pred storage.SelectionPredicate) (watch.Interface, error) {
+func (w *watcher) Watch(ctx context.Context, key string, rev int64, recursive, progressNotify, withStorageSize bool, pred storage.SelectionPredicate) (watch.Interface, error) {
 	if recursive && !strings.HasSuffix(key, "/") {
 		key += "/"
 	}
-	wc := w.createWatchChan(ctx, key, rev, recursive, progressNotify, pred)
+	wc := w.createWatchChan(ctx, key, rev, recursive, progressNotify, withStorageSize, pred)
 	go wc.run()
 
 	// For etcd watch we don't have an easy way to answer whether the watch
@@ -135,13 +136,14 @@ func (w *watcher) Watch(ctx context.Context, key string, rev int64, recursive, p
 	return wc, nil
 }
 
-func (w *watcher) createWatchChan(ctx context.Context, key string, rev int64, recursive, progressNotify bool, pred storage.SelectionPredicate) *watchChan {
+func (w *watcher) createWatchChan(ctx context.Context, key string, rev int64, recursive, progressNotify, withStorageSize bool, pred storage.SelectionPredicate) *watchChan {
 	wc := &watchChan{
 		watcher:           w,
 		key:               key,
 		initialRev:        rev,
 		recursive:         recursive,
 		progressNotify:    progressNotify,
+		withStorageSize:   withStorageSize,
 		internalPred:      pred,
 		incomingEventChan: make(chan *event, incomingBufSize),
 		resultChan:        make(chan watch.Event, outgoingBufSize),
@@ -437,6 +439,9 @@ func (wc *watchChan) prepareObjs(e *event) (curObj runtime.Object, oldObj runtim
 		if err != nil {
 			return nil, nil, err
 		}
+		if wc.withStorageSize {
+			curObj = &storage.ObjectWithStorageSize{Object: curObj, StorageSize: len(data)}
+		}
 	}
 	// We need to decode prevValue, only if this is deletion event or
 	// the underlying filter doesn't accept all objects (otherwise we
@@ -453,6 +458,9 @@ func (wc *watchChan) prepareObjs(e *event) (curObj runtime.Object, oldObj runtim
 		oldObj, err = decodeObj(wc.watcher.codec, wc.watcher.versioner, data, e.rev)
 		if err != nil {
 			return nil, nil, err
+		}
+		if wc.withStorageSize {
+			oldObj = &storage.ObjectWithStorageSize{Object: oldObj, StorageSize: len(data)}
 		}
 	}
 	return curObj, oldObj, nil

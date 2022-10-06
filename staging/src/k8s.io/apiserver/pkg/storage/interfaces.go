@@ -268,4 +268,6 @@ type ListOptions struct {
 	// ProgressNotify determines whether storage-originated bookmark (progress notify) events should
 	// be delivered to the users. The option is ignored for non-watch requests.
 	ProgressNotify bool
+	// WithStorageSize determines whether storage should emit objects with storage size.
+	WithStorageSize bool
 }

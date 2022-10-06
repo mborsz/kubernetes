@@ -135,6 +135,16 @@ var (
 		},
 		[]string{"resource"},
 	)
+
+	WatchCacheStorageSize = compbasemetrics.NewGaugeVec(
+		&compbasemetrics.GaugeOpts{
+			Subsystem:      subsystem,
+			Name:           "capacity",
+			Help:           "Total capacity of watch cache broken by resource type.",
+			StabilityLevel: compbasemetrics.ALPHA,
+		},
+		[]string{"resource"},
+	)
 )
 
 var registerMetrics sync.Once
