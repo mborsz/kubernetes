@@ -167,6 +167,30 @@ type WatchServer struct {
 	ServerShuttingDownCh <-chan struct{}
 }
 
+func (s *WatchServer) eventToEvent(buf *bytes.Buffer, event watch.Event, embeddedEncodeFn func(obj runtime.Object, w io.Writer) error) (*metav1.WatchEvent, error) {
+	var unknown runtime.Unknown
+	obj := s.Fixup(event.Object)                       // no op?
+	if err := embeddedEncodeFn(obj, buf); err != nil { // to się cacheuje!!
+		// unexpected error
+		return nil, fmt.Errorf("unable to encode watch object %T: %v", obj, err)
+	}
+
+	// ContentType is not required here because we are defaulting to the serializer
+	// type
+	unknown.Raw = buf.Bytes()
+	event.Object = &unknown
+	// metrics.WatchEventsSizes.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Observe(float64(len(unknown.Raw)))
+
+	outEvent := &metav1.WatchEvent{}
+	err := metav1.Convert_watch_Event_To_v1_WatchEvent(&event, outEvent, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unable to convert watch object: %v", err)
+		// client disconnect.
+	}
+
+	return outEvent, nil
+}
+
 // ServeHTTP serves a series of encoded events via HTTP with Transfer-Encoding: chunked
 // or over a websocket connection.
 func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -258,32 +282,28 @@ func (s *WatchServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 			metrics.WatchEvents.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Inc()
 
-			obj := s.Fixup(event.Object)
-			if err := embeddedEncodeFn(obj, buf); err != nil {
-				// unexpected error
-				utilruntime.HandleError(fmt.Errorf("unable to encode watch object %T: %v", obj, err))
-				return
+			var outEvent runtime.Object
+			var _ runtime.Object = outEvent
+
+			if obj, ok := event.Object.(runtime.CacheableObject); ok {
+				id := s.EmbeddedEncoder.Identifier()
+				var err error
+				outEvent, err = obj.GetCachedEvent(id, func() (runtime.Object, error) {
+					return s.eventToEvent(buf, event, embeddedEncodeFn)
+				})
+				if err != nil {
+					panic(err)
+				}
+				// outEvent = cachingObject{Object:*metav1.WatchEvent}
+			} else {
+				var err error
+				outEvent, err = s.eventToEvent(buf, event, embeddedEncodeFn)
+				if err != nil {
+					panic(err)
+				}
 			}
 
-			// ContentType is not required here because we are defaulting to the serializer
-			// type
-			unknown.Raw = buf.Bytes()
-			event.Object = &unknown
-			metrics.WatchEventsSizes.WithContext(req.Context()).WithLabelValues(kind.Group, kind.Version, kind.Kind).Observe(float64(len(unknown.Raw)))
-
-			*outEvent = metav1.WatchEvent{}
-
-			// create the external type directly and encode it.  Clients will only recognize the serialization we provide.
-			// The internal event is being reused, not reallocated so its just a few extra assignments to do it this way
-			// and we get the benefit of using conversion functions which already have to stay in sync
-			*internalEvent = metav1.InternalEvent(event)
-			err := metav1.Convert_v1_InternalEvent_To_v1_WatchEvent(internalEvent, outEvent, nil)
-			if err != nil {
-				utilruntime.HandleError(fmt.Errorf("unable to convert watch object: %v", err))
-				// client disconnect.
-				return
-			}
-			if err := e.Encode(outEvent); err != nil {
+			if err := e.Encode(outEvent); err != nil { // to się serializuje za kazdym razem
 				utilruntime.HandleError(fmt.Errorf("unable to encode watch object %T: %v (%#v)", outEvent, err, e))
 				// client disconnect.
 				return
