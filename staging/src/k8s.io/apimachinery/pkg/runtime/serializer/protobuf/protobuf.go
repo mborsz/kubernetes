@@ -18,6 +18,7 @@ package protobuf
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -172,6 +173,10 @@ func (s *Serializer) EncodeWithAllocator(obj runtime.Object, w io.Writer, memAll
 // Encode serializes the provided object to the given writer.
 func (s *Serializer) Encode(obj runtime.Object, w io.Writer) error {
 	return s.encode(obj, w, &runtime.SimpleAllocator{})
+}
+
+func (s *Serializer) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (s *Serializer) encode(obj runtime.Object, w io.Writer, memAlloc runtime.MemoryAllocator) error {
@@ -425,6 +430,10 @@ func (s *RawSerializer) encode(obj runtime.Object, w io.Writer, memAlloc runtime
 		return co.CacheEncode(s.Identifier(), func(obj runtime.Object, w io.Writer) error { return s.doEncode(obj, w, memAlloc) }, w)
 	}
 	return s.doEncode(obj, w, memAlloc)
+}
+
+func (s *RawSerializer) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (s *RawSerializer) doEncode(obj runtime.Object, w io.Writer, memAlloc runtime.MemoryAllocator) error {

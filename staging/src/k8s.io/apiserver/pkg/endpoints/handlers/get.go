@@ -33,6 +33,7 @@ import (
 	metainternalversionscheme "k8s.io/apimachinery/pkg/apis/meta/internalversion/scheme"
 	metainternalversionvalidation "k8s.io/apimachinery/pkg/apis/meta/internalversion/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -277,8 +278,34 @@ func ListResource(r rest.Lister, rw rest.Watcher, scope *RequestScope, forceWatc
 			scope.err(err, w, req)
 			return
 		}
+		obj, items, err := toStreaming(result)
+		if err != nil {
+			scope.err(err, w, req)
+			return
+		}
+
 		span.AddEvent("Listing from storage done")
 		defer span.AddEvent("Writing http response done", attribute.Int("count", meta.LenList(result)))
 		transformResponseObject(ctx, scope, req, w, http.StatusOK, outputMediaType, result)
 	}
+}
+
+func toStreaming(obj runtime.Object) (runtime.Object, <-chan runtime.ObjectOrError, error) {
+	copy := obj.DeepCopyObject()
+	itemsPtr, err := meta.GetItemsPtr(copy)
+	if err != nil {
+		return nil, nil, err
+	}
+	items, err := conversion.EnforcePtr(itemsPtr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	ch := make(chan runtime.ObjectOrError, items.Len())
+	for i := 0; i < items.Len(); i++ {
+		ch <- runtime.ObjectOrError{Object: items.Index(i).Interface().(runtime.Object)}
+	}
+	items.SetLen(0)
+
+	return copy, ch, nil
 }

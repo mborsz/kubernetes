@@ -18,6 +18,7 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +69,10 @@ func (c stripVersionEncoder) Encode(obj runtime.Object, w io.Writer) error {
 		return co.CacheEncode(c.Identifier(), c.doEncode, w)
 	}
 	return c.doEncode(obj, w)
+}
+
+func (c stripVersionEncoder) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (c stripVersionEncoder) doEncode(obj runtime.Object, w io.Writer) error {

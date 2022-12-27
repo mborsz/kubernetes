@@ -29,10 +29,10 @@ func TestSimplePodListStreaming(t *testing.T) {
 		},
 	}
 
-	ch := make(chan runtime.Object, len(a.Items))
+	ch := make(chan runtime.ObjectOrError, len(a.Items))
 	for _, pod := range a.Items {
 		pod := pod
-		ch <- &pod
+		ch <- runtime.ObjectOrError{Object: &pod}
 	}
 	close(ch)
 	refObj := &corev1.PodList{
@@ -56,10 +56,10 @@ func TestFuzzPodListStreaming(t *testing.T) {
 
 			t.Logf("PodList: %+v", a)
 
-			ch := make(chan runtime.Object, len(a.Items))
+			ch := make(chan runtime.ObjectOrError, len(a.Items))
 			for _, pod := range a.Items {
 				pod := pod
-				ch <- &pod
+				ch <- runtime.ObjectOrError{Object: &pod}
 			}
 			close(ch)
 			refObj := &corev1.PodList{

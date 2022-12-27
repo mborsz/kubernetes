@@ -18,6 +18,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -110,6 +111,10 @@ func (n NoopEncoder) Encode(obj Object, w io.Writer) error {
 	// There is no need to handle runtime.CacheableObject, as we don't
 	// process the obj at all.
 	return fmt.Errorf("encoding is not allowed for this codec: %v", reflect.TypeOf(n.Decoder))
+}
+
+func (n NoopEncoder) EncodeStreaming(ctx context.Context, obj Object, items <-chan ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 // Identifier implements runtime.Encoder interface.

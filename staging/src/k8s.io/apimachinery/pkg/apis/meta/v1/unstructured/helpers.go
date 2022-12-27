@@ -17,6 +17,7 @@ limitations under the License.
 package unstructured
 
 import (
+	"context"
 	gojson "encoding/json"
 	"fmt"
 	"io"
@@ -352,6 +353,10 @@ func (s unstructuredJSONScheme) Encode(obj runtime.Object, w io.Writer) error {
 	return s.doEncode(obj, w)
 }
 
+func (s unstructuredJSONScheme) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
+}
+
 func (unstructuredJSONScheme) doEncode(obj runtime.Object, w io.Writer) error {
 	switch t := obj.(type) {
 	case *Unstructured:
@@ -493,6 +498,10 @@ func (c *jsonFallbackEncoder) Encode(obj runtime.Object, w io.Writer) error {
 		}
 	}
 	return err
+}
+
+func (c *jsonFallbackEncoder) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 // Identifier implements runtime.Encoder interface.

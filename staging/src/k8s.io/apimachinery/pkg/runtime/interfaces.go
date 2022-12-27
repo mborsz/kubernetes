@@ -17,6 +17,7 @@ limitations under the License.
 package runtime
 
 import (
+	"context"
 	"io"
 	"net/url"
 
@@ -48,13 +49,18 @@ type GroupVersioner interface {
 // input the output they produce is exactly the same.
 type Identifier string
 
+type ObjectOrError struct {
+	Object Object
+	Err    error
+}
+
 // Encoder writes objects to a serialized form
 type Encoder interface {
 	// Encode writes an object to a stream. Implementations may return errors if the versions are
 	// incompatible, or if no conversion is defined.
 	Encode(obj Object, w io.Writer) error
 
-	EncodeStreaming(obj Object, items <-chan Object, w io.Writer) error
+	EncodeStreaming(ctx context.Context, obj Object, items <-chan ObjectOrError, w io.Writer) error
 	// Identifier returns an identifier of the encoder.
 	// Identifiers of two different encoders should be equal if and only if for every input
 	// object it will be encoded to the same representation by both of them.

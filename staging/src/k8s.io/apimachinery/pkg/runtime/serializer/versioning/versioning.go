@@ -17,7 +17,9 @@ limitations under the License.
 package versioning
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"reflect"
 	"sync"
@@ -205,6 +207,10 @@ func (c *codec) EncodeWithAllocator(obj runtime.Object, w io.Writer, memAlloc ru
 // conversion if necessary. Unversioned objects (according to the ObjectTyper) are output as is.
 func (c *codec) Encode(obj runtime.Object, w io.Writer) error {
 	return c.encode(obj, w, nil)
+}
+
+func (c *codec) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (c *codec) encode(obj runtime.Object, w io.Writer, memAlloc runtime.MemoryAllocator) error {

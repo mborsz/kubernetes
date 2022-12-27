@@ -40,7 +40,7 @@ func getListMeta(obj runtime.Object) (v1.ListMeta, error) {
 }
 
 // MarshalToWriter marshals object referenceList
-func MarshalToWriter(refObj runtime.Object, items <-chan runtime.Object, w io.Writer) error {
+func MarshalToWriter(refObj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
 	if items, err := meta.ExtractList(refObj); err != nil {
 		return fmt.Errorf("failed to extract items: %v", err)
 	} else if len(items) != 0 {
@@ -64,7 +64,11 @@ func MarshalToWriter(refObj runtime.Object, items <-chan runtime.Object, w io.Wr
 		return err
 	}
 
-	for item := range items {
+	for objectOrError := range items {
+		if objectOrError.Err != nil {
+			return objectOrError.Err
+		}
+		item := objectOrError.Object
 		marshaler, ok := item.(proto.Marshaler)
 		if !ok {
 			return fmt.Errorf("item doesn't implement proto.Marshaler: %v", item)

@@ -17,7 +17,9 @@ limitations under the License.
 package json
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
 
@@ -218,6 +220,10 @@ func (s *Serializer) Encode(obj runtime.Object, w io.Writer) error {
 		return co.CacheEncode(s.Identifier(), s.doEncode, w)
 	}
 	return s.doEncode(obj, w)
+}
+
+func (s *Serializer) EncodeStreaming(ctx context.Context, obj runtime.Object, items <-chan runtime.ObjectOrError, w io.Writer) error {
+	return fmt.Errorf("not implemented")
 }
 
 func (s *Serializer) doEncode(obj runtime.Object, w io.Writer) error {
