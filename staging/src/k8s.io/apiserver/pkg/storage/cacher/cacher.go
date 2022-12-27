@@ -650,6 +650,74 @@ func (c *Cacher) listItems(ctx context.Context, listRV uint64, key string, pred 
 	return c.watchCache.WaitUntilFreshAndList(ctx, listRV, pred.MatcherIndex())
 }
 
+// listObj here is an object with Items set to '<-chan runtime.Object'.
+func (c *Cacher) GetListStreaming(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
+	recursive := opts.Recursive
+	resourceVersion := opts.ResourceVersion
+	pred := opts.Predicate
+	if shouldDelegateList(opts) {
+		return c.storage.GetListStreaming(ctx, key, opts, listObj)
+	}
+
+	// If resourceVersion is specified, serve it from cache.
+	// It's guaranteed that the returned value is at least that
+	// fresh as the given resourceVersion.
+	listRV, err := c.versioner.ParseResourceVersion(resourceVersion)
+	if err != nil {
+		return err
+	}
+
+	if listRV == 0 && !c.ready.check() {
+		// If Cacher is not yet initialized and we don't require any specific
+		// minimal resource version, simply forward the request to storage.
+		return c.storage.GetListStreaming(ctx, key, opts, listObj)
+	}
+
+	ctx, span := tracing.Start(ctx, "cacher list",
+		attribute.String("audit-id", audit.GetAuditIDTruncated(ctx)),
+		attribute.Stringer("type", c.groupResource))
+	defer span.End(500 * time.Millisecond)
+
+	if err := c.ready.wait(); err != nil {
+		return errors.NewServiceUnavailable(err.Error())
+	}
+	span.AddEvent("Ready")
+
+	filter := filterWithAttrsFunction(key, pred)
+
+	// objs is a slice of pointers.
+	objs, readResourceVersion, indexUsed, err := c.listItems(ctx, listRV, key, pred, recursive)
+	if err != nil {
+		return err
+	}
+	if c.versioner != nil {
+		if err := c.versioner.UpdateList(listObj, readResourceVersion, "", nil); err != nil {
+			return err
+		}
+	}
+	
+	var count int
+	span.AddEvent("Listed items from cache", attribute.Int("count", len(objs)))
+
+	resultChan := make(chan runtime.Object)
+	defer close(resultChan)
+
+	for _, obj := range objs {
+		elem, ok := obj.(*storeElement)
+		if !ok {
+			return nil, fmt.Errorf("non *storeElement returned from storage: %v", obj)
+		}
+		if filter(elem.Key, elem.Labels, elem.Fields) {
+			resultChan <- elem.Object
+			count++
+		}
+	}
+	span.AddEvent("Filtered items", attribute.Int("count", count))
+
+	metrics.RecordListCacheMetrics(c.resourcePrefix, indexUsed, len(objs), count)
+	return nil
+}
+
 // GetList implements storage.Interface
 func (c *Cacher) GetList(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
 	recursive := opts.Recursive

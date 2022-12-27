@@ -53,6 +53,8 @@ type Encoder interface {
 	// Encode writes an object to a stream. Implementations may return errors if the versions are
 	// incompatible, or if no conversion is defined.
 	Encode(obj Object, w io.Writer) error
+
+	EncodeStreaming(obj Object, items <-chan Object, w io.Writer) error
 	// Identifier returns an identifier of the encoder.
 	// Identifiers of two different encoders should be equal if and only if for every input
 	// object it will be encoded to the same representation by both of them.
