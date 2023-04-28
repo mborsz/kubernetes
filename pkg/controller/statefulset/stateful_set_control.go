@@ -391,100 +391,113 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 
 	monotonic := !allowsBurst(set)
 
+	type PerReplicaFunc func() (finishWhenMonotonic bool, err error)
+	var fns []PerReplicaFunc
+
 	// Examine each replica with respect to its ordinal
 	for i := range replicas {
-		// delete and recreate failed pods
-		if isFailed(replicas[i]) {
-			ssc.recorder.Eventf(set, v1.EventTypeWarning, "RecreatingFailedPod",
-				"StatefulSet %s/%s is recreating failed Pod %s",
-				set.Namespace,
-				set.Name,
-				replicas[i].Name)
-			if err := ssc.podControl.DeleteStatefulPod(set, replicas[i]); err != nil {
-				return &status, err
+		i := i
+		fns = append(fns, func() (finishWhenMonotonic bool, err error) {
+			// delete and recreate failed pods
+			if isFailed(replicas[i]) {
+				ssc.recorder.Eventf(set, v1.EventTypeWarning, "RecreatingFailedPod",
+					"StatefulSet %s/%s is recreating failed Pod %s",
+					set.Namespace,
+					set.Name,
+					replicas[i].Name)
+				if err := ssc.podControl.DeleteStatefulPod(set, replicas[i]); err != nil {
+					return false, err
+				}
+				if getPodRevision(replicas[i]) == currentRevision.Name {
+					status.CurrentReplicas--
+				}
+				if getPodRevision(replicas[i]) == updateRevision.Name {
+					status.UpdatedReplicas--
+				}
+				status.Replicas--
+				replicaOrd := i + getStartOrdinal(set)
+				replicas[i] = newVersionedStatefulSetPod(
+					currentSet,
+					updateSet,
+					currentRevision.Name,
+					updateRevision.Name,
+					replicaOrd)
 			}
-			if getPodRevision(replicas[i]) == currentRevision.Name {
-				status.CurrentReplicas--
+			// If we find a Pod that has not been created we create the Pod
+			if !isCreated(replicas[i]) {
+				if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
+					if isStale, err := ssc.podControl.PodClaimIsStale(set, replicas[i]); err != nil {
+						return false, err
+					} else if isStale {
+						// If a pod has a stale PVC, no more work can be done this round.
+						return false, err
+					}
+				}
+				if err := ssc.podControl.CreateStatefulPod(ctx, set, replicas[i]); err != nil {
+					return false, err
+				}
+				status.Replicas++
+				if getPodRevision(replicas[i]) == currentRevision.Name {
+					status.CurrentReplicas++
+				}
+				if getPodRevision(replicas[i]) == updateRevision.Name {
+					status.UpdatedReplicas++
+				}
+				return true, nil
 			}
-			if getPodRevision(replicas[i]) == updateRevision.Name {
-				status.UpdatedReplicas--
+			// If we find a Pod that is currently terminating, we must wait until graceful deletion
+			// completes before we continue to make progress.
+			if isTerminating(replicas[i]) {
+				klog.V(4).InfoS("StatefulSet is waiting for Pod to Terminate",
+					"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
+				return true, nil
 			}
-			status.Replicas--
-			replicaOrd := i + getStartOrdinal(set)
-			replicas[i] = newVersionedStatefulSetPod(
-				currentSet,
-				updateSet,
-				currentRevision.Name,
-				updateRevision.Name,
-				replicaOrd)
-		}
-		// If we find a Pod that has not been created we create the Pod
-		if !isCreated(replicas[i]) {
+			// If we have a Pod that has been created but is not running and ready we can not make progress.
+			// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
+			// ordinal, are Running and Ready.
+			if !isRunningAndReady(replicas[i]) {
+				klog.V(4).InfoS("StatefulSet is waiting for Pod to be Running and Ready",
+					"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
+				return true, nil
+			}
+			// If we have a Pod that has been created but is not available we can not make progress.
+			// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
+			// ordinal, are Available.
+			if !isRunningAndAvailable(replicas[i], set.Spec.MinReadySeconds) {
+				klog.V(4).InfoS("StatefulSet is waiting for Pod to be Available",
+					"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
+				return true, nil
+			}
+			// Enforce the StatefulSet invariants
+			retentionMatch := true
 			if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
-				if isStale, err := ssc.podControl.PodClaimIsStale(set, replicas[i]); err != nil {
-					return &status, err
-				} else if isStale {
-					// If a pod has a stale PVC, no more work can be done this round.
+				var err error
+				retentionMatch, err = ssc.podControl.ClaimsMatchRetentionPolicy(updateSet, replicas[i])
+				// An error is expected if the pod is not yet fully updated, and so return is treated as matching.
+				if err != nil {
+					retentionMatch = true
+				}
+			}
+			if identityMatches(set, replicas[i]) && storageMatches(set, replicas[i]) && retentionMatch {
+				return false, nil
+			}
+			// Make a deep copy so we don't mutate the shared cache
+			replica := replicas[i].DeepCopy()
+			if err := ssc.podControl.UpdateStatefulPod(updateSet, replica); err != nil {
+				return false, err
+			}
+			return false, nil
+		})
+
+		if monotonic {
+			for _, fn := range fns {
+				finishWhenMonotonic, err := fn()
+				if finishWhenMonotonic || err != nil {
 					return &status, err
 				}
 			}
-			if err := ssc.podControl.CreateStatefulPod(ctx, set, replicas[i]); err != nil {
-				return &status, err
-			}
-			status.Replicas++
-			if getPodRevision(replicas[i]) == currentRevision.Name {
-				status.CurrentReplicas++
-			}
-			if getPodRevision(replicas[i]) == updateRevision.Name {
-				status.UpdatedReplicas++
-			}
-			// if the set does not allow bursting, return immediately
-			if monotonic {
-				return &status, nil
-			}
-			// pod created, no more work possible for this round
-			continue
-		}
-		// If we find a Pod that is currently terminating, we must wait until graceful deletion
-		// completes before we continue to make progress.
-		if isTerminating(replicas[i]) && monotonic {
-			klog.V(4).InfoS("StatefulSet is waiting for Pod to Terminate",
-				"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
-			return &status, nil
-		}
-		// If we have a Pod that has been created but is not running and ready we can not make progress.
-		// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
-		// ordinal, are Running and Ready.
-		if !isRunningAndReady(replicas[i]) && monotonic {
-			klog.V(4).InfoS("StatefulSet is waiting for Pod to be Running and Ready",
-				"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
-			return &status, nil
-		}
-		// If we have a Pod that has been created but is not available we can not make progress.
-		// We must ensure that all for each Pod, when we create it, all of its predecessors, with respect to its
-		// ordinal, are Available.
-		if !isRunningAndAvailable(replicas[i], set.Spec.MinReadySeconds) && monotonic {
-			klog.V(4).InfoS("StatefulSet is waiting for Pod to be Available",
-				"statefulSet", klog.KObj(set), "pod", klog.KObj(replicas[i]))
-			return &status, nil
-		}
-		// Enforce the StatefulSet invariants
-		retentionMatch := true
-		if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
-			var err error
-			retentionMatch, err = ssc.podControl.ClaimsMatchRetentionPolicy(updateSet, replicas[i])
-			// An error is expected if the pod is not yet fully updated, and so return is treated as matching.
-			if err != nil {
-				retentionMatch = true
-			}
-		}
-		if identityMatches(set, replicas[i]) && storageMatches(set, replicas[i]) && retentionMatch {
-			continue
-		}
-		// Make a deep copy so we don't mutate the shared cache
-		replica := replicas[i].DeepCopy()
-		if err := ssc.podControl.UpdateStatefulPod(updateSet, replica); err != nil {
-			return &status, err
+		} else {
+
 		}
 	}
 
