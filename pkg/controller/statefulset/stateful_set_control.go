@@ -393,59 +393,67 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 
 	monotonic := !allowsBurst(set)
 
+	// fns contains only functions before first "blocking" replica (in mononotinc mode)
+	var fns []func() error
+
 	// Examine each replica with respect to its ordinal
 	for i := range replicas {
-		// delete and recreate failed pods
-		if isFailed(replicas[i]) {
-			ssc.recorder.Eventf(set, v1.EventTypeWarning, "RecreatingFailedPod",
-				"StatefulSet %s/%s is recreating failed Pod %s",
-				set.Namespace,
-				set.Name,
-				replicas[i].Name)
-			if err := ssc.podControl.DeleteStatefulPod(set, replicas[i]); err != nil {
-				return &status, err
-			}
-			if getPodRevision(replicas[i]) == currentRevision.Name {
-				status.CurrentReplicas--
-			}
-			if getPodRevision(replicas[i]) == updateRevision.Name {
-				status.UpdatedReplicas--
-			}
-			status.Replicas--
-			replicaOrd := i + getStartOrdinal(set)
-			replicas[i] = newVersionedStatefulSetPod(
-				currentSet,
-				updateSet,
-				currentRevision.Name,
-				updateRevision.Name,
-				replicaOrd)
-		}
-		// If we find a Pod that has not been created we create the Pod
-		if !isCreated(replicas[i]) {
-			if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
-				if isStale, err := ssc.podControl.PodClaimIsStale(set, replicas[i]); err != nil {
-					return &status, err
-				} else if isStale {
-					// If a pod has a stale PVC, no more work can be done this round.
-					return &status, err
+		if isFailed(replicas[i]) || !isCreated(replicas[i]) {
+			fns = append(fns, func() error {
+				// delete and recreate failed pods
+				if isFailed(replicas[i]) {
+					ssc.recorder.Eventf(set, v1.EventTypeWarning, "RecreatingFailedPod",
+						"StatefulSet %s/%s is recreating failed Pod %s",
+						set.Namespace,
+						set.Name,
+						replicas[i].Name)
+					if err := ssc.podControl.DeleteStatefulPod(set, replicas[i]); err != nil {
+						return err
+					}
+					if getPodRevision(replicas[i]) == currentRevision.Name {
+						status.CurrentReplicas--
+					}
+					if getPodRevision(replicas[i]) == updateRevision.Name {
+						status.UpdatedReplicas--
+					}
+					status.Replicas--
+					replicaOrd := i + getStartOrdinal(set)
+					replicas[i] = newVersionedStatefulSetPod(
+						currentSet,
+						updateSet,
+						currentRevision.Name,
+						updateRevision.Name,
+						replicaOrd)
 				}
-			}
-			if err := ssc.podControl.CreateStatefulPod(ctx, set, replicas[i]); err != nil {
-				return &status, err
-			}
-			status.Replicas++
-			if getPodRevision(replicas[i]) == currentRevision.Name {
-				status.CurrentReplicas++
-			}
-			if getPodRevision(replicas[i]) == updateRevision.Name {
-				status.UpdatedReplicas++
-			}
+				// If we find a Pod that has not been created we create the Pod
+				if !isCreated(replicas[i]) {
+					if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
+						if isStale, err := ssc.podControl.PodClaimIsStale(set, replicas[i]); err != nil {
+							return err
+						} else if isStale {
+							// If a pod has a stale PVC, no more work can be done this round.
+							return err
+						}
+					}
+					if err := ssc.podControl.CreateStatefulPod(ctx, set, replicas[i]); err != nil {
+						return err
+					}
+					status.Replicas++
+					if getPodRevision(replicas[i]) == currentRevision.Name {
+						status.CurrentReplicas++
+					}
+					if getPodRevision(replicas[i]) == updateRevision.Name {
+						status.UpdatedReplicas++
+					}
+				}
+				return nil
+			})
+
 			// if the set does not allow bursting, return immediately
 			if monotonic {
-				return &status, nil
+				break
 			}
-			// pod created, no more work possible for this round
-			continue
+
 		}
 
 		// If the Pod is in pending state then trigger PVC creation to create missing PVCs
@@ -495,11 +503,22 @@ func (ssc *defaultStatefulSetControl) updateStatefulSet(
 		if identityMatches(set, replicas[i]) && storageMatches(set, replicas[i]) && retentionMatch {
 			continue
 		}
-		// Make a deep copy so we don't mutate the shared cache
-		replica := replicas[i].DeepCopy()
-		if err := ssc.podControl.UpdateStatefulPod(ctx, updateSet, replica); err != nil {
-			return &status, err
+
+		fns = append(fns, func() error {
+			// Make a deep copy so we don't mutate the shared cache
+			replica := replicas[i].DeepCopy()
+			return ssc.podControl.UpdateStatefulPod(ctx, updateSet, replica)
+		})
+	}
+
+	if monotonic {
+		for _, fn := range fns {
+			if err := fn(); err != nil {
+				return &status, err
+			}
 		}
+	} else {
+		// run fn in batches.
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.StatefulSetAutoDeletePVC) {
