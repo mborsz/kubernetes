@@ -717,3 +717,177 @@ func TestHugePageUnitSizeFromByteSize(t *testing.T) {
 		}
 	}
 }
+
+func TestAddOrUpdateTolerationInPodSpec(t *testing.T) {
+	thirty := int64(30)
+	tests := []struct {
+		name           string
+		podSpec        *v1.PodSpec
+		toleration     *v1.Toleration
+		expectUpdated  bool
+		expectList     []v1.Toleration
+	}{
+		{
+			name: "add new toleration",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			toleration: &v1.Toleration{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+			expectUpdated: true,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+			},
+		},
+		{
+			name: "update existing toleration",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			toleration: &v1.Toleration{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule, TolerationSeconds: &thirty}, // TolerationSeconds changed
+			expectUpdated: true,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule, TolerationSeconds: &thirty},
+			},
+		},
+		{
+			name: "identical toleration, no update",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			toleration: &v1.Toleration{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+			expectUpdated: false,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			updated := AddOrUpdateTolerationInPodSpec(tc.podSpec, tc.toleration)
+			if updated != tc.expectUpdated {
+				t.Errorf("Expected updated %v, got %v", tc.expectUpdated, updated)
+			}
+			if !reflect.DeepEqual(tc.podSpec.Tolerations, tc.expectList) {
+				t.Errorf("Expected list %+v, got %+v", tc.expectList, tc.podSpec.Tolerations)
+			}
+		})
+	}
+}
+
+func TestAddOrUpdateTolerationsInPodSpec(t *testing.T) {
+	thirty := int64(30)
+	tests := []struct {
+		name           string
+		podSpec        *v1.PodSpec
+		tolerations    []v1.Toleration
+		expectUpdated  bool
+		expectList     []v1.Toleration
+	}{
+		{
+			name: "add multiple new tolerations",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			tolerations: []v1.Toleration{
+				{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+				{Key: "key3", Value: "value3", Effect: v1.TaintEffectNoSchedule},
+			},
+			expectUpdated: true,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+				{Key: "key3", Value: "value3", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+		{
+			name: "update and add tolerations",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			tolerations: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule, TolerationSeconds: &thirty}, // update
+				{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoSchedule}, // add
+			},
+			expectUpdated: true,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule, TolerationSeconds: &thirty},
+				{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+		{
+			name: "identical tolerations, no update",
+			podSpec: &v1.PodSpec{
+				Tolerations: []v1.Toleration{
+					{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+				},
+			},
+			tolerations: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+			},
+			expectUpdated: false,
+			expectList: []v1.Toleration{
+				{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			updated := AddOrUpdateTolerationsInPodSpec(tc.podSpec, tc.tolerations...)
+			if updated != tc.expectUpdated {
+				t.Errorf("Expected updated %v, got %v", tc.expectUpdated, updated)
+			}
+			if !reflect.DeepEqual(tc.podSpec.Tolerations, tc.expectList) {
+				t.Errorf("Expected list %+v, got %+v", tc.expectList, tc.podSpec.Tolerations)
+			}
+		})
+	}
+}
+
+func BenchmarkAddOrUpdateTolerationInPodSpec_Sequential(b *testing.B) {
+	tolerations := []v1.Toleration{
+		{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+		{Key: "key3", Value: "value3", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key4", Value: "value4", Effect: v1.TaintEffectNoExecute},
+		{Key: "key5", Value: "value5", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key6", Value: "value6", Effect: v1.TaintEffectNoExecute},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spec := &v1.PodSpec{}
+		for _, t := range tolerations {
+			AddOrUpdateTolerationInPodSpec(spec, &t)
+		}
+	}
+}
+
+func BenchmarkAddOrUpdateTolerationsInPodSpec_Batched(b *testing.B) {
+	tolerations := []v1.Toleration{
+		{Key: "key1", Value: "value1", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key2", Value: "value2", Effect: v1.TaintEffectNoExecute},
+		{Key: "key3", Value: "value3", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key4", Value: "value4", Effect: v1.TaintEffectNoExecute},
+		{Key: "key5", Value: "value5", Effect: v1.TaintEffectNoSchedule},
+		{Key: "key6", Value: "value6", Effect: v1.TaintEffectNoExecute},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spec := &v1.PodSpec{}
+		AddOrUpdateTolerationsInPodSpec(spec, tolerations...)
+	}
+}

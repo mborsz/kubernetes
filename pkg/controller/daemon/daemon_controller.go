@@ -1376,28 +1376,99 @@ func (dsc *DaemonSetsController) syncDaemonSet(ctx context.Context, key string) 
 //     Returns true when a daemonset should continue running on a node if a daemonset pod is already
 //     running on that node.
 func NodeShouldRunDaemonPod(logger klog.Logger, node *v1.Node, ds *apps.DaemonSet) (bool, bool) {
-	pod := NewPod(ds, node.Name)
-
 	// If the daemon set specifies a node name, check that it matches with node.Name.
 	if !(ds.Spec.Template.Spec.NodeName == "" || ds.Spec.Template.Spec.NodeName == node.Name) {
 		return false, false
 	}
 
-	taints := node.Spec.Taints
-	fitsNodeName, fitsNodeAffinity, fitsTaints := predicates(logger, pod, node, taints)
+	// Minimal pod for node affinity check to avoid copying full spec.
+	affinityPod := &v1.Pod{
+		Spec: v1.PodSpec{
+			NodeSelector: ds.Spec.Template.Spec.NodeSelector,
+			Affinity:     ds.Spec.Template.Spec.Affinity,
+		},
+	}
+
+	fitsNodeName := true // trivial in this context
+	fitsNodeAffinity, _ := nodeaffinity.GetRequiredNodeAffinity(affinityPod).Match(node)
+
 	if !fitsNodeName || !fitsNodeAffinity {
 		return false, false
 	}
 
+	taints := node.Spec.Taints
+	fitsTaints := ToleratesTaints(logger, ds, taints, v1.TaintEffectNoExecute, v1.TaintEffectNoSchedule)
+
 	if !fitsTaints {
 		// Scheduled daemon pods should continue running if they tolerate NoExecute taint.
-		_, hasUntoleratedTaint := v1helper.FindMatchingUntoleratedTaint(logger, taints, pod.Spec.Tolerations, func(t *v1.Taint) bool {
-			return t.Effect == v1.TaintEffectNoExecute
-		}, utilfeature.DefaultFeatureGate.Enabled(features.TaintTolerationComparisonOperators))
-		return false, !hasUntoleratedTaint
+		continuesRunning := ToleratesTaints(logger, ds, taints, v1.TaintEffectNoExecute)
+		return false, continuesRunning
 	}
 
 	return true, true
+}
+
+// ToleratesTaints checks if the DaemonSet pod (with defaults) tolerates specified taints.
+func ToleratesTaints(logger klog.Logger, ds *apps.DaemonSet, taints []v1.Taint, effects ...v1.TaintEffect) bool {
+	enableComparisonOperators := utilfeature.DefaultFeatureGate.Enabled(features.TaintTolerationComparisonOperators)
+	for i := range taints {
+		taint := &taints[i]
+		if !hasEffect(taint.Effect, effects) {
+			continue
+		}
+
+		tolerated := false
+		// Check DS tolerations
+		for j := range ds.Spec.Template.Spec.Tolerations {
+			if ds.Spec.Template.Spec.Tolerations[j].ToleratesTaint(logger, taint, enableComparisonOperators) {
+				tolerated = true
+				break
+			}
+		}
+		if tolerated {
+			continue
+		}
+
+		// Check default tolerations
+		if toleratesWithDefaults(logger, ds.Spec.Template.Spec.HostNetwork, taint, enableComparisonOperators) {
+			continue
+		}
+
+		return false // Found an untolerated taint
+	}
+	return true
+}
+
+func hasEffect(effect v1.TaintEffect, effects []v1.TaintEffect) bool {
+	for _, e := range effects {
+		if effect == e {
+			return true
+		}
+	}
+	return false
+}
+
+func toleratesWithDefaults(logger klog.Logger, hostNetwork bool, taint *v1.Taint, enableComparisonOperators bool) bool {
+	defaults := []v1.Toleration{
+		{Key: v1.TaintNodeNotReady, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoExecute},
+		{Key: v1.TaintNodeUnreachable, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoExecute},
+		{Key: v1.TaintNodeDiskPressure, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoSchedule},
+		{Key: v1.TaintNodeMemoryPressure, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoSchedule},
+		{Key: v1.TaintNodePIDPressure, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoSchedule},
+		{Key: v1.TaintNodeUnschedulable, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoSchedule},
+	}
+	for i := range defaults {
+		if defaults[i].ToleratesTaint(logger, taint, enableComparisonOperators) {
+			return true
+		}
+	}
+	if hostNetwork {
+		t := v1.Toleration{Key: v1.TaintNodeNetworkUnavailable, Operator: v1.TolerationOpExists, Effect: v1.TaintEffectNoSchedule}
+		if t.ToleratesTaint(logger, taint, enableComparisonOperators) {
+			return true
+		}
+	}
+	return false
 }
 
 // predicates checks if a DaemonSet's pod can run on a node.

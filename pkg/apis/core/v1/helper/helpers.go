@@ -266,18 +266,23 @@ func MatchTopologySelectorTerms(topologySelectorTerms []v1.TopologySelectorTerm,
 func AddOrUpdateTolerationInPodSpec(spec *v1.PodSpec, toleration *v1.Toleration) bool {
 	podTolerations := spec.Tolerations
 
-	var newTolerations []v1.Toleration
+	// Check if we need to do anything
+	for i := range podTolerations {
+		if toleration.MatchToleration(&podTolerations[i]) {
+			if helper.Semantic.DeepEqual(*toleration, podTolerations[i]) {
+				return false // Already present and identical, no change needed.
+			}
+		}
+	}
+
+	newTolerations := make([]v1.Toleration, 0, len(podTolerations)+1)
 	updated := false
 	for i := range podTolerations {
 		if toleration.MatchToleration(&podTolerations[i]) {
-			if helper.Semantic.DeepEqual(toleration, podTolerations[i]) {
-				return false
-			}
 			newTolerations = append(newTolerations, *toleration)
 			updated = true
 			continue
 		}
-
 		newTolerations = append(newTolerations, podTolerations[i])
 	}
 
@@ -287,6 +292,41 @@ func AddOrUpdateTolerationInPodSpec(spec *v1.PodSpec, toleration *v1.Toleration)
 
 	spec.Tolerations = newTolerations
 	return true
+}
+
+// AddOrUpdateTolerationsInPodSpec tries to add or update multiple tolerations in PodSpec.
+// Returns true if something was updated, false otherwise.
+func AddOrUpdateTolerationsInPodSpec(spec *v1.PodSpec, tolerations ...v1.Toleration) bool {
+	podTolerations := spec.Tolerations
+	updated := false
+
+	newTolerations := make([]v1.Toleration, 0, len(podTolerations)+len(tolerations))
+	newTolerations = append(newTolerations, podTolerations...)
+
+	for _, t := range tolerations {
+		tUpdated := false
+		for i := range newTolerations {
+			if t.MatchToleration(&newTolerations[i]) {
+				if helper.Semantic.DeepEqual(t, newTolerations[i]) {
+					tUpdated = true
+					break
+				}
+				newTolerations[i] = t
+				tUpdated = true
+				updated = true
+				break
+			}
+		}
+		if !tUpdated {
+			newTolerations = append(newTolerations, t)
+			updated = true
+		}
+	}
+
+	if updated {
+		spec.Tolerations = newTolerations
+	}
+	return updated
 }
 
 // GetMatchingTolerations returns true and list of Tolerations matching all Taints if all are tolerated, or false otherwise.

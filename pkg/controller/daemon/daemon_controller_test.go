@@ -37,7 +37,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/storage/names"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
+	v1helper "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
@@ -2396,6 +2399,66 @@ func TestNodeShouldRunDaemonPod(t *testing.T) {
 				t.Errorf("[%v] strategy: %v, predicateName: %v expected shouldContinueRunning: %v, got: %v", i, c.ds.Spec.UpdateStrategy.Type, c.predicateName, c.shouldContinueRunning, shouldContinueRunning)
 			}
 		}
+	}
+}
+
+func BenchmarkNodeShouldRunDaemonPod_New(b *testing.B) {
+	logger := klog.Background()
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
+	}
+	ds := &apps.DaemonSet{
+		Spec: apps.DaemonSetSpec{
+			Template: v1.PodTemplateSpec{
+				Spec: v1.PodSpec{
+					NodeSelector: map[string]string{"type": "production"},
+				},
+			},
+		},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		NodeShouldRunDaemonPod(logger, node, ds)
+	}
+}
+
+func BenchmarkNodeShouldRunDaemonPod_OldStyle(b *testing.B) {
+	logger := klog.Background()
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-node"},
+	}
+	ds := &apps.DaemonSet{
+		Spec: apps.DaemonSetSpec{
+			Template: v1.PodTemplateSpec{
+				Spec: v1.PodSpec{
+					NodeSelector: map[string]string{"type": "production"},
+				},
+			},
+		},
+	}
+	
+	nodeShouldRunDaemonPodOld := func(logger klog.Logger, node *v1.Node, ds *apps.DaemonSet) (bool, bool) {
+		pod := NewPod(ds, node.Name)
+		if !(ds.Spec.Template.Spec.NodeName == "" || ds.Spec.Template.Spec.NodeName == node.Name) {
+			return false, false
+		}
+		taints := node.Spec.Taints
+		fitsNodeName, fitsNodeAffinity, fitsTaints := predicates(logger, pod, node, taints)
+		if !fitsNodeName || !fitsNodeAffinity {
+			return false, false
+		}
+		if !fitsTaints {
+			_, hasUntoleratedTaint := v1helper.FindMatchingUntoleratedTaint(logger, taints, pod.Spec.Tolerations, func(t *v1.Taint) bool {
+				return t.Effect == v1.TaintEffectNoExecute
+			}, utilfeature.DefaultFeatureGate.Enabled(features.TaintTolerationComparisonOperators))
+			return false, !hasUntoleratedTaint
+		}
+		return true, true
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nodeShouldRunDaemonPodOld(logger, node, ds)
 	}
 }
 

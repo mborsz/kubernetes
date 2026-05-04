@@ -50,55 +50,54 @@ func AddOrUpdateDaemonPodTolerations(spec *v1.PodSpec) {
 	// Add infinite toleration for taint notReady:NoExecute here
 	// to survive taint-based eviction enforced by NodeController
 	// when node turns not ready.
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodeNotReady,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoExecute,
-	})
-
-	// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
-	// Add infinite toleration for taint unreachable:NoExecute here
-	// to survive taint-based eviction enforced by NodeController
-	// when node turns unreachable.
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodeUnreachable,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoExecute,
-	})
-
-	// According to TaintNodesByCondition feature, all DaemonSet pods should tolerate
-	// MemoryPressure, DiskPressure, PIDPressure, Unschedulable and NetworkUnavailable taints.
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodeDiskPressure,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoSchedule,
-	})
-
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodeMemoryPressure,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoSchedule,
-	})
-
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodePIDPressure,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoSchedule,
-	})
-
-	v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
-		Key:      v1.TaintNodeUnschedulable,
-		Operator: v1.TolerationOpExists,
-		Effect:   v1.TaintEffectNoSchedule,
-	})
+	tolerations := []v1.Toleration{
+		{
+			Key:      v1.TaintNodeNotReady,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoExecute,
+		},
+		// DaemonSet pods shouldn't be deleted by NodeController in case of node problems.
+		// Add infinite toleration for taint unreachable:NoExecute here
+		// to survive taint-based eviction enforced by NodeController
+		// when node turns unreachable.
+		{
+			Key:      v1.TaintNodeUnreachable,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoExecute,
+		},
+		// According to TaintNodesByCondition feature, all DaemonSet pods should tolerate
+		// MemoryPressure, DiskPressure, PIDPressure, Unschedulable and NetworkUnavailable taints.
+		{
+			Key:      v1.TaintNodeDiskPressure,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoSchedule,
+		},
+		{
+			Key:      v1.TaintNodeMemoryPressure,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoSchedule,
+		},
+		{
+			Key:      v1.TaintNodePIDPressure,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoSchedule,
+		},
+		{
+			Key:      v1.TaintNodeUnschedulable,
+			Operator: v1.TolerationOpExists,
+			Effect:   v1.TaintEffectNoSchedule,
+		},
+	}
 
 	if spec.HostNetwork {
-		v1helper.AddOrUpdateTolerationInPodSpec(spec, &v1.Toleration{
+		tolerations = append(tolerations, v1.Toleration{
 			Key:      v1.TaintNodeNetworkUnavailable,
 			Operator: v1.TolerationOpExists,
 			Effect:   v1.TaintEffectNoSchedule,
 		})
 	}
+
+	v1helper.AddOrUpdateTolerationsInPodSpec(spec, tolerations...)
 }
 
 // CreatePodTemplate returns copy of provided template with additional
