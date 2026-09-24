@@ -244,6 +244,9 @@ func validateClusterInfo(clusterName string, clusterInfo clientcmdapi.Cluster) [
 			validationErrors = append(validationErrors, fmt.Errorf("invalid 'proxy-url' %q for cluster %q: %w", proxyURL, clusterName, err))
 		}
 	}
+	if clusterInfo.ConnectionPoolSize < 0 {
+		validationErrors = append(validationErrors, fmt.Errorf("invalid 'connection-pool-size' %d for cluster %q: must be non-negative", clusterInfo.ConnectionPoolSize, clusterName))
+	}
 	// Make sure CA data and CA file aren't both specified
 	if len(clusterInfo.CertificateAuthority) != 0 && len(clusterInfo.CertificateAuthorityData) != 0 {
 		validationErrors = append(validationErrors, fmt.Errorf("certificate-authority-data and certificate-authority are both specified for %v. certificate-authority-data will override.", clusterName))

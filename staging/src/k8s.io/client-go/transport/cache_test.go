@@ -32,6 +32,7 @@ import (
 	"time"
 	"weak"
 
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgofeaturegate "k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
@@ -47,8 +48,9 @@ func TestTLSConfigKey(t *testing.T) {
 		"basic":          {Username: "bob", Password: "password"},
 		"bearer":         {BearerToken: "token"},
 		"user agent":     {UserAgent: "useragent"},
-		"transport":      {Transport: http.DefaultTransport},
-		"wrap transport": {WrapTransport: func(http.RoundTripper) http.RoundTripper { return nil }},
+		"transport":            {Transport: http.DefaultTransport},
+		"wrap transport":       {WrapTransport: func(http.RoundTripper) http.RoundTripper { return nil }},
+		"connection pool 1":    {ConnectionPoolSize: 1},
 	}
 	for nameA, valueA := range identicalConfigurations {
 		for nameB, valueB := range identicalConfigurations {
@@ -87,6 +89,7 @@ func TestTLSConfigKey(t *testing.T) {
 	caFile := writeCAFile(t, []byte(testCACert1))
 	uniqueConfigurations := map[string]*Config{
 		"proxy":                         {Proxy: func(request *http.Request) (*url.URL, error) { return nil, nil }},
+		"connection pool 2":             {ConnectionPoolSize: 2},
 		"no tls":                        {},
 		"dialer":                        {DialHolder: &DialHolder{Dial: dialer.DialContext}},
 		"dialer2":                       {DialHolder: &DialHolder{Dial: func(ctx context.Context, network, address string) (net.Conn, error) { return nil, nil }}},
@@ -174,7 +177,7 @@ func TestTLSConfigKey(t *testing.T) {
 				continue
 			}
 
-			shouldCacheA := valueA.Proxy == nil
+			shouldCacheA := valueA.Proxy == nil && valueA.ConnectionPoolSize <= 1
 			if shouldCacheA != canCacheA {
 				t.Error("Unexpected canCache=false for " + nameA)
 			}
@@ -996,4 +999,88 @@ func installFakeMetrics(t *testing.T) (*recordingCreateCalls, *recordingCacheGCC
 		metrics.TransportCacheEntries = origEntries
 	})
 	return createCalls, gcCalls, rotationGCCalls, cacheEntries
+}
+
+func TestConnectionPoolCertAndCARotationAndUnwrappers(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientgofeaturegate.ClientsAllowTLSCacheGC, true)
+	clientfeaturestesting.SetFeatureDuringTest(t, clientgofeaturegate.ClientsAllowCARotation, true)
+	createCalls, _, rotationGCCalls, _ := installFakeMetrics(t)
+
+	caFile := writeCAFile(t, []byte(testCACert1))
+	certFile := writeCAFile(t, []byte(certData))
+	keyFile := writeCAFile(t, []byte(keyData))
+
+	const poolSize = 3
+	baseline := runtime.NumGoroutine()
+
+	rt, err := New(&Config{
+		ConnectionPoolSize: poolSize,
+		BearerToken:        "test-token",
+		TLS: TLSConfig{
+			CAFile:   caFile,
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error creating pooled transport: %v", err)
+	}
+
+	if calls := createCalls.reset(); len(calls) != 1 || calls[0] != "uncacheable" {
+		t.Fatalf("expected [uncacheable], got %v", calls)
+	}
+
+	tlsCfg, err := utilnet.TLSClientConfig(rt)
+	if err != nil || tlsCfg == nil {
+		t.Fatalf("expected utilnet.TLSClientConfig to succeed through wrappers, got cfg=%v err=%v", tlsCfg, err)
+	}
+	dialer, err := utilnet.DialerFor(rt)
+	if err != nil || dialer == nil {
+		t.Fatalf("expected utilnet.DialerFor to succeed through wrappers, got dialer=%v err=%v", dialer, err)
+	}
+
+	// Unwrap outer bearerAuthRoundTripper to inspect connectionPoolRoundTripper slots
+	pool, ok := rt.(utilnet.RoundTripperWrapper).WrappedRoundTripper().(*connectionPoolRoundTripper)
+	if !ok {
+		t.Fatalf("expected *connectionPoolRoundTripper, got %T", rt)
+	}
+	if len(pool.transports) != poolSize {
+		t.Fatalf("expected %d pooled transports, got %d", poolSize, len(pool.transports))
+	}
+	seenHolders := make(map[*atomicTransportHolder]bool)
+	seenHTTPTransports := make(map[*http.Transport]bool)
+	for i, pt := range pool.transports {
+		tracked, ok := pt.rt.(*trackedTransport)
+		if !ok {
+			t.Fatalf("slot %d: expected *trackedTransport, got %T", i, pt.rt)
+		}
+		holder, ok := tracked.rt.(*atomicTransportHolder)
+		if !ok {
+			t.Fatalf("slot %d: expected *atomicTransportHolder, got %T", i, tracked.rt)
+		}
+		if seenHolders[holder] {
+			t.Fatalf("slot %d: duplicate *atomicTransportHolder instance", i)
+		}
+		seenHolders[holder] = true
+		httpRT := holder.getTransport(context.Background())
+		if seenHTTPTransports[httpRT] {
+			t.Fatalf("slot %d: duplicate *http.Transport instance", i)
+		}
+		seenHTTPTransports[httpRT] = true
+	}
+
+	// Ensure all poolSize cert-rotation goroutines are cleaned up when rt is GC-collected
+	rt = nil
+	pool = nil
+	clear(seenHolders)
+	clear(seenHTTPTransports)
+
+	err = wait.PollUntilContextTimeout(t.Context(), 10*time.Millisecond, 10*time.Second, true, func(_ context.Context) (bool, error) {
+		runtime.GC()
+		return rotationGCCalls.count.Load() == poolSize && runtime.NumGoroutine() <= baseline, nil
+	})
+	if err != nil {
+		t.Fatalf("expected all %d cert rotation goroutines to be cleaned up on GC (got count=%d, baseline=%d, current=%d): %v",
+			poolSize, rotationGCCalls.count.Load(), baseline, runtime.NumGoroutine(), err)
+	}
 }

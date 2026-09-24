@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/spf13/pflag"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
@@ -298,6 +299,169 @@ func TestDisableCompression(t *testing.T) {
 	}
 
 	matchBoolArg(true, actualCfg.DisableCompression, t)
+}
+
+func TestConnectionPoolSize(t *testing.T) {
+	kubeconfigYAML := `apiVersion: v1
+kind: Config
+clusters:
+- name: clean
+  cluster:
+    server: https://anything.com:8080
+    connection-pool-size: 4
+users:
+- name: clean
+  user:
+    token: the-token
+contexts:
+- name: clean
+  context:
+    cluster: clean
+    user: clean
+current-context: clean
+`
+	loadedConfig, err := Load([]byte(kubeconfigYAML))
+	if err != nil {
+		t.Fatalf("Unexpected error loading kubeconfig YAML: %v", err)
+	}
+	matchIntArg(4, loadedConfig.Clusters["clean"].ConnectionPoolSize, t)
+
+	serializedBytes, err := Write(*loadedConfig)
+	if err != nil {
+		t.Fatalf("Unexpected error writing kubeconfig: %v", err)
+	}
+	reloadedConfig, err := Load(serializedBytes)
+	if err != nil {
+		t.Fatalf("Unexpected error reloading kubeconfig: %v", err)
+	}
+	matchIntArg(4, reloadedConfig.Clusters["clean"].ConnectionPoolSize, t)
+
+	clientBuilder := NewNonInteractiveClientConfig(*reloadedConfig, "clean", &ConfigOverrides{}, nil)
+	actualCfg, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error building ClientConfig: %v", err)
+	}
+	matchIntArg(4, actualCfg.ConnectionPoolSize, t)
+
+	transportCfg, err := actualCfg.TransportConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error building TransportConfig: %v", err)
+	}
+	matchIntArg(4, transportCfg.ConnectionPoolSize, t)
+
+	// Verify CLI flag --connection-pool-size override
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	var overrides ConfigOverrides
+	flagNames := RecommendedConfigOverrideFlags("")
+	BindOverrideFlags(&overrides, flags, flagNames)
+	if err := flags.Parse([]string{"--connection-pool-size=7"}); err != nil {
+		t.Fatalf("Unexpected error parsing flags: %v", err)
+	}
+	matchIntArg(7, overrides.ClusterInfo.ConnectionPoolSize, t)
+
+	overriddenBuilder := NewNonInteractiveClientConfig(*reloadedConfig, "clean", &overrides, nil)
+	overriddenCfg, err := overriddenBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error building overridden ClientConfig: %v", err)
+	}
+	matchIntArg(7, overriddenCfg.ConnectionPoolSize, t)
+
+	// Verify multi-file kubeconfig merging via ClientConfigLoadingRules.Load()
+	highPriorityFile, err := os.CreateTemp(t.TempDir(), "kubeconfig-high-*")
+	if err != nil {
+		t.Fatalf("Unexpected error creating temp file: %v", err)
+	}
+	_ = highPriorityFile.Close()
+	lowPriorityFile, err := os.CreateTemp(t.TempDir(), "kubeconfig-low-*")
+	if err != nil {
+		t.Fatalf("Unexpected error creating temp file: %v", err)
+	}
+	_ = lowPriorityFile.Close()
+
+	highCfg := clientcmdapi.NewConfig()
+	highCfg.Clusters["secondary"] = &clientcmdapi.Cluster{
+		Server:             "https://secondary.com:8080",
+		ConnectionPoolSize: 6,
+	}
+	if err := WriteToFile(*highCfg, highPriorityFile.Name()); err != nil {
+		t.Fatalf("Unexpected error writing high priority kubeconfig: %v", err)
+	}
+	if err := WriteToFile(*reloadedConfig, lowPriorityFile.Name()); err != nil {
+		t.Fatalf("Unexpected error writing low priority kubeconfig: %v", err)
+	}
+	loadingRules := &ClientConfigLoadingRules{
+		Precedence: []string{highPriorityFile.Name(), lowPriorityFile.Name()},
+	}
+	mergedCfg, err := loadingRules.Load()
+	if err != nil {
+		t.Fatalf("Unexpected error merging kubeconfigs: %v", err)
+	}
+	matchIntArg(4, mergedCfg.Clusters["clean"].ConnectionPoolSize, t)
+	matchIntArg(6, mergedCfg.Clusters["secondary"].ConnectionPoolSize, t)
+
+	// Verify validation rejects negative ConnectionPoolSize
+	invalidCfg := reloadedConfig.DeepCopy()
+	invalidCfg.Clusters["clean"].ConnectionPoolSize = -1
+	if err := Validate(*invalidCfg); err == nil {
+		t.Fatalf("Expected validation error for negative ConnectionPoolSize, got nil")
+	}
+	invalidBuilder := NewNonInteractiveClientConfig(*invalidCfg, "clean", &ConfigOverrides{}, nil)
+	if _, err := invalidBuilder.ClientConfig(); err == nil {
+		t.Fatalf("Expected ClientConfig error for negative ConnectionPoolSize, got nil")
+	}
+
+	// Verify inClusterClientConfig propagates positive ConnectionPoolSize override and rejects negative override
+	icc := &inClusterClientConfig{
+		inClusterConfigProvider: func() (*restclient.Config, error) {
+			return &restclient.Config{Host: "https://in-cluster:443"}, nil
+		},
+		overrides: &ConfigOverrides{
+			ClusterInfo: clientcmdapi.Cluster{ConnectionPoolSize: 5},
+		},
+	}
+	iccCfg, err := icc.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error from inClusterClientConfig: %v", err)
+	}
+	matchIntArg(5, iccCfg.ConnectionPoolSize, t)
+
+	iccInvalid := &inClusterClientConfig{
+		inClusterConfigProvider: func() (*restclient.Config, error) {
+			return &restclient.Config{Host: "https://in-cluster:443"}, nil
+		},
+		overrides: &ConfigOverrides{
+			ClusterInfo: clientcmdapi.Cluster{ConnectionPoolSize: -2},
+		},
+	}
+	if _, err := iccInvalid.ClientConfig(); err == nil {
+		t.Fatalf("Expected error from inClusterClientConfig with negative ConnectionPoolSize, got nil")
+	}
+
+	iccDefaults := &inClusterClientConfig{
+		inClusterConfigProvider: func() (*restclient.Config, error) {
+			return &restclient.Config{Host: "https://in-cluster:443"}, nil
+		},
+		overrides: &ConfigOverrides{
+			ClusterDefaults: clientcmdapi.Cluster{ConnectionPoolSize: 3},
+		},
+	}
+	iccDefaultsCfg, err := iccDefaults.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error from inClusterClientConfig with ClusterDefaults: %v", err)
+	}
+	matchIntArg(3, iccDefaultsCfg.ConnectionPoolSize, t)
+
+	iccDefaultsInvalid := &inClusterClientConfig{
+		inClusterConfigProvider: func() (*restclient.Config, error) {
+			return &restclient.Config{Host: "https://in-cluster:443"}, nil
+		},
+		overrides: &ConfigOverrides{
+			ClusterDefaults: clientcmdapi.Cluster{ConnectionPoolSize: -3},
+		},
+	}
+	if _, err := iccDefaultsInvalid.ClientConfig(); err == nil {
+		t.Fatalf("Expected error from inClusterClientConfig with negative ClusterDefaults.ConnectionPoolSize, got nil")
+	}
 }
 
 func TestInsecureOverridesCA(t *testing.T) {

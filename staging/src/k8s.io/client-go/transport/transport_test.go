@@ -22,9 +22,16 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 
 	clientgofeaturegate "k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
@@ -619,5 +626,339 @@ func TestRootCertPoolEmptyData(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type mockReadWriteCloser struct {
+	io.Reader
+	written strings.Builder
+	closed  bool
+}
+
+func (m *mockReadWriteCloser) Write(p []byte) (int, error) {
+	return m.written.Write(p)
+}
+
+func (m *mockReadWriteCloser) Close() error {
+	m.closed = true
+	return nil
+}
+
+type mockPooledRT struct {
+	id          int
+	inFlightRef *atomic.Int64
+	seenActive  atomic.Int64
+	calls       atomic.Int64
+	idleClosed  atomic.Int64
+	failNext    atomic.Bool
+	panicNext   atomic.Bool
+	rwcNext     atomic.Bool
+}
+
+func (m *mockPooledRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	m.calls.Add(1)
+	if m.inFlightRef != nil {
+		m.seenActive.Store(m.inFlightRef.Load())
+	}
+	if m.panicNext.Load() {
+		panic("simulated roundtrip panic")
+	}
+	if m.failNext.Load() {
+		return nil, errors.New("simulated RoundTrip failure")
+	}
+	if m.rwcNext.Load() {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			Body:       &mockReadWriteCloser{Reader: strings.NewReader("upgraded")},
+			Header:     make(http.Header),
+		}, nil
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte("streaming-chunk"))
+		_ = pw.Close()
+	}()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     make(http.Header),
+	}, nil
+}
+
+func (m *mockPooledRT) CloseIdleConnections() {
+	m.idleClosed.Add(1)
+}
+
+func TestConnectionPoolP2CSelectionAndInFlightAccounting(t *testing.T) {
+	mocks := make([]*mockPooledRT, 3)
+	rts := make([]http.RoundTripper, 3)
+	for i := range 3 {
+		mocks[i] = &mockPooledRT{id: i}
+		rts[i] = mocks[i]
+	}
+
+	pool := newConnectionPoolRoundTripper(rts)
+	for i := range 3 {
+		mocks[i].inFlightRef = &pool.transports[i].inFlight
+	}
+
+	// Control candidate selection deterministically: pick candidates (0, 1).
+	// Initially both have 0 in-flight requests; candidate 0 is chosen and held open (like a WATCH stream).
+	seq := []int{0, 0} // i=0, j=0 -> j>=i increments j to 1 -> pair (0, 1)
+	idx := 0
+	pool.randIntn = func(n int) int {
+		v := seq[idx%len(seq)]
+		idx++
+		return v % n
+	}
+
+	req1, err := http.NewRequest(http.MethodGet, "https://example.com/watch", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp1, err := pool.RoundTrip(req1)
+	if err != nil {
+		t.Fatalf("unexpected error on req1: %v", err)
+	}
+	// Verify in-flight count was incremented before RoundTrip and remains 1 while resp1.Body is open.
+	if got := mocks[0].seenActive.Load(); got != 1 {
+		t.Fatalf("expected transport 0 to observe inFlight=1 during RoundTrip, got %d", got)
+	}
+	if got := pool.transports[0].inFlight.Load(); got != 1 {
+		t.Fatalf("expected transport 0 inFlight=1 while streaming body is open, got %d", got)
+	}
+
+	// Now send req2 when candidates (0, 1) are compared again.
+	// Since transport 0 has inFlight=1 and transport 1 has inFlight=0, P2C MUST route req2 to transport 1.
+	req2, err := http.NewRequest(http.MethodGet, "https://example.com/list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2, err := pool.RoundTrip(req2)
+	if err != nil {
+		t.Fatalf("unexpected error on req2: %v", err)
+	}
+	if got := mocks[1].calls.Load(); got != 1 {
+		t.Fatalf("expected P2C to route req2 to less-loaded transport 1, got calls=%d", got)
+	}
+	if got := pool.transports[1].inFlight.Load(); got != 1 {
+		t.Fatalf("expected transport 1 inFlight=1 before resp2.Body.Close(), got %d", got)
+	}
+
+	// Close resp2.Body multiple times; verify inFlight decrements exactly once to 0.
+	if err := resp2.Body.Close(); err != nil {
+		t.Fatalf("unexpected error closing resp2.Body: %v", err)
+	}
+	if err := resp2.Body.Close(); err != nil {
+		t.Fatalf("unexpected error on second Close of resp2.Body: %v", err)
+	}
+	if got := pool.transports[1].inFlight.Load(); got != 0 {
+		t.Fatalf("expected transport 1 inFlight=0 after resp2.Body.Close(), got %d", got)
+	}
+	// Transport 0 still has its streaming response open.
+	if got := pool.transports[0].inFlight.Load(); got != 1 {
+		t.Fatalf("expected transport 0 inFlight=1 while resp1.Body is still open, got %d", got)
+	}
+
+	// Simulate RoundTrip error on transport 1; verify inFlight is decremented immediately on error.
+	mocks[1].failNext.Store(true)
+	_, err = pool.RoundTrip(req2)
+	if err == nil {
+		t.Fatalf("expected error from failing RoundTrip")
+	}
+	mocks[1].failNext.Store(false)
+	if got := pool.transports[1].inFlight.Load(); got != 0 {
+		t.Fatalf("expected transport 1 inFlight=0 after failed RoundTrip, got %d", got)
+	}
+
+	// Simulate RoundTrip panic on transport 1; verify inFlight is still decremented via defer.
+	mocks[1].panicNext.Store(true)
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatalf("expected panic from RoundTrip")
+			}
+		}()
+		_, _ = pool.RoundTrip(req2)
+	}()
+	mocks[1].panicNext.Store(false)
+	if got := pool.transports[1].inFlight.Load(); got != 0 {
+		t.Fatalf("expected transport 1 inFlight=0 after panicking RoundTrip, got %d", got)
+	}
+
+	// Verify io.ReadWriteCloser response body wrapping (e.g. 101 Switching Protocols) preserves io.ReadWriteCloser and inFlight tracking.
+	mocks[1].rwcNext.Store(true)
+	respRWC, err := pool.RoundTrip(req2)
+	mocks[1].rwcNext.Store(false)
+	if err != nil {
+		t.Fatalf("unexpected error on rwc RoundTrip: %v", err)
+	}
+	rwc, ok := respRWC.Body.(io.ReadWriteCloser)
+	if !ok {
+		t.Fatalf("expected wrapped Body to implement io.ReadWriteCloser, got %T", respRWC.Body)
+	}
+	if _, err := rwc.Write([]byte("ping")); err != nil {
+		t.Fatalf("unexpected error writing to upgraded body: %v", err)
+	}
+	if got := pool.transports[1].inFlight.Load(); got != 1 {
+		t.Fatalf("expected transport 1 inFlight=1 while upgraded body is open, got %d", got)
+	}
+	if err := rwc.Close(); err != nil {
+		t.Fatalf("unexpected error closing upgraded body: %v", err)
+	}
+	if got := pool.transports[1].inFlight.Load(); got != 0 {
+		t.Fatalf("expected transport 1 inFlight=0 after closing upgraded body, got %d", got)
+	}
+
+	// Finally close the long-lived stream resp1.Body and verify transport 0 inFlight returns to 0.
+	if err := resp1.Body.Close(); err != nil {
+		t.Fatalf("unexpected error closing resp1.Body: %v", err)
+	}
+	if got := pool.transports[0].inFlight.Load(); got != 0 {
+		t.Fatalf("expected transport 0 inFlight=0 after resp1.Body.Close(), got %d", got)
+	}
+
+	// Verify empty connectionPoolRoundTripper returns error instead of panicking.
+	emptyPool := newConnectionPoolRoundTripper(nil)
+	if _, err := emptyPool.RoundTrip(req2); err == nil {
+		t.Fatalf("expected error from empty connectionPoolRoundTripper, got nil")
+	}
+
+	// Verify utilnet.CloseIdleConnectionsFor propagates to all pooled transports even through wrappers.
+	wrapped, err := HTTPWrappersForConfig(&Config{UserAgent: "test-agent", BearerToken: "secret"}, pool)
+	if err != nil {
+		t.Fatalf("unexpected error wrapping pool: %v", err)
+	}
+	utilnet.CloseIdleConnectionsFor(wrapped)
+	for i, m := range mocks {
+		if got := m.idleClosed.Load(); got != 1 {
+			t.Fatalf("expected transport %d CloseIdleConnections count=1, got %d", i, got)
+		}
+	}
+}
+
+func TestConnectionPoolHTTP2MultiConnectionLoadSpreading(t *testing.T) {
+	t.Setenv("DISABLE_HTTP2", "")
+
+	const poolSize = 4
+	const concurrentRequests = 32
+
+	var (
+		mu          sync.Mutex
+		remoteAddrs = make(map[string]int)
+		protos      = make(map[string]int)
+	)
+
+	var activeCount atomic.Int32
+	allArrived := make(chan struct{})
+	var closeOnce sync.Once
+	releaseCh := make(chan struct{})
+
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remoteAddrs[r.RemoteAddr]++
+		protos[r.Proto]++
+		mu.Unlock()
+
+		if activeCount.Add(1) == concurrentRequests {
+			closeOnce.Do(func() { close(allArrived) })
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-releaseCh
+		_, _ = fmt.Fprintln(w, "ok")
+	}))
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	defer ts.Close()
+
+	runConcurrentLoad := func(t *testing.T, size int) (map[string]int, map[string]int) {
+		t.Helper()
+		mu.Lock()
+		remoteAddrs = make(map[string]int)
+		protos = make(map[string]int)
+		mu.Unlock()
+		activeCount.Store(0)
+		allArrived = make(chan struct{})
+		closeOnce = sync.Once{}
+		releaseCh = make(chan struct{})
+
+		rt, err := New(&Config{
+			TLS: TLSConfig{
+				Insecure: true,
+			},
+			ConnectionPoolSize: size,
+		})
+		if err != nil {
+			t.Fatalf("failed to create transport for poolSize=%d: %v", size, err)
+		}
+		defer utilnet.CloseIdleConnectionsFor(rt)
+
+		client := &http.Client{Transport: rt}
+		var wg sync.WaitGroup
+		errCh := make(chan error, concurrentRequests)
+
+		// First warm up all connections in the pool concurrently so HTTP/2 connections are established,
+		// or let concurrent requests establish them while held open by releaseCh.
+		for range concurrentRequests {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				resp, err := client.Get(ts.URL + "/api/v1/pods")
+				if err != nil {
+					errCh <- err
+					return
+				}
+				defer resp.Body.Close()
+				_, _ = io.ReadAll(resp.Body)
+			}()
+		}
+
+		<-allArrived
+		close(releaseCh)
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			t.Fatalf("request failed for poolSize=%d: %v", size, err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+		addrsCopy := make(map[string]int, len(remoteAddrs))
+		for k, v := range remoteAddrs {
+			addrsCopy[k] = v
+		}
+		protosCopy := make(map[string]int, len(protos))
+		for k, v := range protos {
+			protosCopy[k] = v
+		}
+		return addrsCopy, protosCopy
+	}
+
+	for _, singleSize := range []int{0, 1} {
+		addrs, protosSeen := runConcurrentLoad(t, singleSize)
+		if protosSeen["HTTP/2.0"] != concurrentRequests {
+			t.Fatalf("poolSize=%d: expected all %d requests to use HTTP/2.0, got %v", singleSize, concurrentRequests, protosSeen)
+		}
+		if len(addrs) != 1 {
+			t.Fatalf("poolSize=%d: expected exactly 1 underlying TCP connection, got %d (%v)", singleSize, len(addrs), addrs)
+		}
+	}
+
+	pooledAddrs, pooledProtos := runConcurrentLoad(t, poolSize)
+	if pooledProtos["HTTP/2.0"] != concurrentRequests {
+		t.Fatalf("poolSize=%d: expected all %d requests to use HTTP/2.0, got %v", poolSize, concurrentRequests, pooledProtos)
+	}
+	// With 32 concurrent held-open requests across 4 transports using P2C, all 4 transports must be used.
+	if len(pooledAddrs) != poolSize {
+		t.Fatalf("poolSize=%d: expected exactly %d distinct TCP connections, got %d (%v)", poolSize, poolSize, len(pooledAddrs), pooledAddrs)
+	}
+	for addr := range pooledAddrs {
+		if !strings.Contains(addr, ":") {
+			t.Fatalf("unexpected RemoteAddr format: %q", addr)
+		}
 	}
 }

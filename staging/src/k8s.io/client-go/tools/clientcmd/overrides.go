@@ -75,6 +75,7 @@ type ClusterOverrideFlags struct {
 	TLSServerName         FlagInfo
 	ProxyURL              FlagInfo
 	DisableCompression    FlagInfo
+	ConnectionPoolSize    FlagInfo
 }
 
 // FlagInfo contains information about how to register a flag.  This struct is useful if you want to provide a way for an extender to
@@ -143,6 +144,21 @@ func (f FlagInfo) BindBoolFlag(flags *pflag.FlagSet, target *bool) FlagInfo {
 	return f
 }
 
+// BindIntFlag binds the flag based on the provided info.  If LongName == "", nothing is registered
+func (f FlagInfo) BindIntFlag(flags *pflag.FlagSet, target *int) FlagInfo {
+	// you can't register a flag without a long name
+	if len(f.LongName) > 0 {
+		// try to parse Default as an int.  If it fails, assume 0
+		intVal, err := strconv.Atoi(f.Default)
+		if err != nil {
+			intVal = 0
+		}
+
+		flags.IntVarP(target, f.LongName, f.ShortName, intVal, f.Description)
+	}
+	return f
+}
+
 const (
 	FlagClusterName        = "cluster"
 	FlagAuthInfoName       = "user"
@@ -164,6 +180,7 @@ const (
 	FlagTimeout            = "request-timeout"
 	FlagProxyURL           = "proxy-url"
 	FlagDisableCompression = "disable-compression"
+	FlagConnectionPoolSize = "connection-pool-size"
 )
 
 // RecommendedConfigOverrideFlags is a convenience method to return recommended flag names prefixed with a string of your choosing
@@ -201,6 +218,7 @@ func RecommendedClusterOverrideFlags(prefix string) ClusterOverrideFlags {
 		TLSServerName:         FlagInfo{prefix + FlagTLSServerName, "", "", "If provided, this name will be used to validate server certificate. If this is not provided, hostname used to contact the server is used."},
 		ProxyURL:              FlagInfo{prefix + FlagProxyURL, "", "", "If provided, this URL will be used to connect via proxy"},
 		DisableCompression:    FlagInfo{prefix + FlagDisableCompression, "", "", "If true, opt-out of response compression for all requests to the server"},
+		ConnectionPoolSize:    FlagInfo{prefix + FlagConnectionPoolSize, "", "0", "If greater than 1, the number of independent connections to open to the server and load-balance across using Power-of-Two-Choices"},
 	}
 }
 
@@ -242,6 +260,7 @@ func BindClusterFlags(clusterInfo *clientcmdapi.Cluster, flags *pflag.FlagSet, f
 	flagNames.TLSServerName.BindStringFlag(flags, &clusterInfo.TLSServerName)
 	flagNames.ProxyURL.BindStringFlag(flags, &clusterInfo.ProxyURL)
 	flagNames.DisableCompression.BindBoolFlag(flags, &clusterInfo.DisableCompression)
+	flagNames.ConnectionPoolSize.BindIntFlag(flags, &clusterInfo.ConnectionPoolSize)
 }
 
 // BindFlags is a convenience method to bind the specified flags to their associated variables

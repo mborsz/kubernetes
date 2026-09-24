@@ -63,7 +63,8 @@ func TestConfigToExecCluster(t *testing.T) {
 					Insecure:   true,
 					CAData:     []byte("some-ca-data"),
 				},
-				Proxy: proxy,
+				Proxy:              proxy,
+				ConnectionPoolSize: 4,
 			},
 			wantOut: clientauthenticationapi.Cluster{
 				Server:                   "some-host",
@@ -71,6 +72,7 @@ func TestConfigToExecCluster(t *testing.T) {
 				InsecureSkipTLSVerify:    true,
 				CertificateAuthorityData: []byte("some-ca-data"),
 				ProxyURL:                 proxyURL,
+				ConnectionPoolSize:       4,
 				Config: &runtime.Unknown{
 					Raw: []byte("stuff"),
 				},

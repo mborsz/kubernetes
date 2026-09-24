@@ -56,6 +56,7 @@ func ConfigToExecCluster(config *Config) (*clientauthenticationapi.Cluster, erro
 		CertificateAuthorityData: caData,
 		ProxyURL:                 proxyURL,
 		DisableCompression:       config.DisableCompression,
+		ConnectionPoolSize:       config.ConnectionPoolSize,
 		Config:                   config.ExecProvider.Config,
 	}, nil
 }
@@ -82,5 +83,6 @@ func ExecClusterToConfig(cluster *clientauthenticationapi.Cluster) (*Config, err
 		},
 		Proxy:              proxy,
 		DisableCompression: cluster.DisableCompression,
+		ConnectionPoolSize: cluster.ConnectionPoolSize,
 	}, nil
 }

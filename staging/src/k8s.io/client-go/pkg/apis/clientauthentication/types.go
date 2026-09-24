@@ -103,6 +103,11 @@ type Cluster struct {
 	// compression (server-side) and decompression (client-side): https://github.com/kubernetes/kubernetes/issues/112296.
 	// +optional
 	DisableCompression bool
+	// ConnectionPoolSize specifies the number of independent HTTP transports/connections
+	// to open to the server and load-balance requests across using Power-of-Two-Choices.
+	// When <= 1 (or unset), a single shared transport is used.
+	// +optional
+	ConnectionPoolSize int
 	// Config holds additional config data that is specific to the exec
 	// plugin with regards to the cluster being authenticated to.
 	//

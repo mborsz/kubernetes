@@ -89,6 +89,7 @@ func (c *Config) TransportConfig() (*transport.Config, error) {
 		Transport:          c.Transport,
 		WrapTransport:      c.WrapTransport,
 		DisableCompression: c.DisableCompression,
+		ConnectionPoolSize: c.ConnectionPoolSize,
 		TLS: transport.TLSConfig{
 			Insecure:   c.Insecure,
 			ServerName: c.ServerName,

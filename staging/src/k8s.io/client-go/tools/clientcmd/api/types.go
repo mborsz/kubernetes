@@ -100,6 +100,11 @@ type Cluster struct {
 	// compression (server-side) and decompression (client-side): https://github.com/kubernetes/kubernetes/issues/112296.
 	// +optional
 	DisableCompression bool `json:"disable-compression,omitempty"`
+	// ConnectionPoolSize specifies the number of independent HTTP transports/connections
+	// to open to the server and load-balance requests across using Power-of-Two-Choices.
+	// When <= 1 (or unset), a single shared transport is used.
+	// +optional
+	ConnectionPoolSize int `json:"connection-pool-size,omitempty"`
 	// Extensions holds additional information. This is useful for extenders so that reads and writes don't clobber unknown fields
 	// +optional
 	Extensions map[string]runtime.Object `json:"extensions,omitempty"`

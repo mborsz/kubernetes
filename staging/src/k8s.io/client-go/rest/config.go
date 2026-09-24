@@ -102,6 +102,11 @@ type Config struct {
 	// server.
 	DisableCompression bool
 
+	// ConnectionPoolSize specifies the number of independent HTTP transports/connections
+	// to open to the server and load-balance requests across using Power-of-Two-Choices.
+	// When <= 1 (or unset), a single shared transport is used.
+	ConnectionPoolSize int
+
 	// Transport may be used for custom HTTP behavior. This attribute may not
 	// be specified with the TLS client certificate options. Use WrapTransport
 	// to provide additional per-server middleware behavior.
@@ -651,6 +656,7 @@ func AnonymousClientConfig(config *Config) *Config {
 		WarningHandlerWithContext: config.WarningHandlerWithContext,
 		UserAgent:                 config.UserAgent,
 		DisableCompression:        config.DisableCompression,
+		ConnectionPoolSize:        config.ConnectionPoolSize,
 		QPS:                       config.QPS,
 		Burst:                     config.Burst,
 		Timeout:                   config.Timeout,
@@ -691,6 +697,7 @@ func CopyConfig(config *Config) *Config {
 		},
 		UserAgent:                 config.UserAgent,
 		DisableCompression:        config.DisableCompression,
+		ConnectionPoolSize:        config.ConnectionPoolSize,
 		Transport:                 config.Transport,
 		WrapTransport:             config.WrapTransport,
 		QPS:                       config.QPS,

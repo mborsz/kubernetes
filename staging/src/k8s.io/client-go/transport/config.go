@@ -52,6 +52,11 @@ type Config struct {
 	// server.
 	DisableCompression bool
 
+	// ConnectionPoolSize specifies the number of independent HTTP transports/connections
+	// to open to the server and load-balance requests across using Power-of-Two-Choices.
+	// When <= 1 (or unset), a single shared transport is used.
+	ConnectionPoolSize int
+
 	// Transport may be used for custom HTTP behavior. This attribute may
 	// not be specified with the TLS client certificate options. Use
 	// WrapTransport for most client level operations.

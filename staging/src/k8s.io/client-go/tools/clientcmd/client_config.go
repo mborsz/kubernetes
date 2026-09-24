@@ -204,6 +204,7 @@ func (config *DirectClientConfig) ClientConfig() (*restclient.Config, error) {
 	}
 
 	clientConfig.DisableCompression = configClusterInfo.DisableCompression
+	clientConfig.ConnectionPoolSize = configClusterInfo.ConnectionPoolSize
 
 	if config.overrides != nil && len(config.overrides.Timeout) > 0 {
 		timeout, err := ParseTimeout(config.overrides.Timeout)
@@ -637,6 +638,16 @@ func (config *inClusterClientConfig) ClientConfig() (*restclient.Config, error) 
 		}
 		if certificateAuthorityFile := config.overrides.ClusterInfo.CertificateAuthority; len(certificateAuthorityFile) > 0 {
 			icc.TLSClientConfig.CAFile = certificateAuthorityFile
+		}
+		poolSize := config.overrides.ClusterDefaults.ConnectionPoolSize
+		if config.overrides.ClusterInfo.ConnectionPoolSize != 0 {
+			poolSize = config.overrides.ClusterInfo.ConnectionPoolSize
+		}
+		if poolSize < 0 {
+			return nil, fmt.Errorf("invalid 'connection-pool-size' %d: must be non-negative", poolSize)
+		}
+		if poolSize > 0 {
+			icc.ConnectionPoolSize = poolSize
 		}
 	}
 
