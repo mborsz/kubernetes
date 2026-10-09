@@ -18,14 +18,23 @@ package transport
 
 import (
 	"crypto/x509"
+	"errors"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	clientgofeaturegate "k8s.io/client-go/features"
+	"k8s.io/utils/clock"
 )
+
+// connectionFailureBackoff is how long a pool member is avoided after it failed
+// to connect to the server, unless a request to it succeeds earlier.
+const connectionFailureBackoff = 200 * time.Millisecond
 
 // connectionPool spreads requests across a fixed set of independent
 // RoundTrippers ("members"), each of which keeps its own connections.
@@ -34,8 +43,15 @@ import (
 // fewer requests in flight ("power of two choices"). A request is in flight
 // until its response body is closed or fully read, so long-running requests
 // such as watches are taken into account.
+//
+// If avoidFailingMembers is set, a member that failed to connect is avoided
+// for connectionFailureBackoff. Without it, a member whose connections fail
+// instantly (for example because they are refused) never has requests in
+// flight, so it would get more traffic than the healthy members.
 type connectionPool struct {
-	members []*poolMember
+	members             []*poolMember
+	avoidFailingMembers bool
+	clock               clock.PassiveClock
 	// intn returns a random number in [0, n).
 	intn func(n int) int
 }
@@ -43,6 +59,9 @@ type connectionPool struct {
 type poolMember struct {
 	rt       rotatableCARoundTripper
 	inFlight atomic.Int64
+	// failedUntil is the time, in Unix nanoseconds, until which the member is
+	// avoided after a connection failure, or 0.
+	failedUntil atomic.Int64
 }
 
 var _ rotatableCARoundTripper = &connectionPool{}
@@ -54,10 +73,15 @@ func newConnectionPool(rts []rotatableCARoundTripper) *connectionPool {
 	for i, rt := range rts {
 		members[i] = &poolMember{rt: rt}
 	}
-	return &connectionPool{members: members, intn: rand.IntN}
+	return &connectionPool{
+		members:             members,
+		avoidFailingMembers: clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.ClientsAllowConnectionPoolFailureAvoidance),
+		clock:               clock.RealClock{},
+		intn:                rand.IntN,
+	}
 }
 
-// pick returns the less loaded of two distinct, randomly chosen members.
+// pick returns the better of two distinct, randomly chosen members.
 func (p *connectionPool) pick() *poolMember {
 	n := len(p.members)
 	if n == 1 {
@@ -71,22 +95,52 @@ func (p *connectionPool) pick() *poolMember {
 		j++
 	}
 	a, b := p.members[i], p.members[j]
-	if b.inFlight.Load() < a.inFlight.Load() {
+	if p.better(b, a) {
 		return b
 	}
 	return a
+}
+
+// better reports whether a should be used rather than b: a member that did not
+// recently fail to connect is preferred, then the one with fewer requests in flight.
+func (p *connectionPool) better(a, b *poolMember) bool {
+	if p.avoidFailingMembers {
+		if aFailed, bFailed := p.failedRecently(a), p.failedRecently(b); aFailed != bFailed {
+			return bFailed
+		}
+	}
+	return a.inFlight.Load() < b.inFlight.Load()
+}
+
+func (p *connectionPool) failedRecently(m *poolMember) bool {
+	until := m.failedUntil.Load()
+	return until != 0 && p.clock.Now().UnixNano() < until
 }
 
 func (p *connectionPool) RoundTrip(req *http.Request) (*http.Response, error) {
 	m := p.pick()
 	m.inFlight.Add(1)
 	resp, err := m.rt.RoundTrip(req)
+	if p.avoidFailingMembers {
+		if err == nil {
+			m.failedUntil.Store(0)
+		} else if isConnectionFailure(err) && req.Context().Err() == nil {
+			m.failedUntil.Store(p.clock.Now().Add(connectionFailureBackoff).UnixNano())
+		}
+	}
 	if err != nil || resp == nil || resp.Body == nil {
 		m.inFlight.Add(-1)
 		return resp, err
 	}
 	resp.Body = newInFlightBody(resp.Body, func() { m.inFlight.Add(-1) })
 	return resp, nil
+}
+
+// isConnectionFailure reports whether err means that connecting to the server
+// failed, for example because the connection was refused or timed out.
+func isConnectionFailure(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 func (p *connectionPool) CloseIdleConnections() {
@@ -103,6 +157,8 @@ func (p *connectionPool) Clone() rotatableCARoundTripper {
 		rts[i] = m.rt.Clone()
 	}
 	clone := newConnectionPool(rts)
+	clone.avoidFailingMembers = p.avoidFailingMembers
+	clone.clock = p.clock
 	clone.intn = p.intn
 	return clone
 }

@@ -17,14 +17,23 @@ limitations under the License.
 package transport
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	clientgofeaturegate "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
+	testingclock "k8s.io/utils/clock/testing"
 )
 
 type fakePoolMemberRT struct {
@@ -220,5 +229,128 @@ func TestConnectionPoolCloneAndSetRootCAs(t *testing.T) {
 	}
 	if clone.GetRootCAs() != newCAs || pool.GetRootCAs() != oldCAs {
 		t.Error("expected GetRootCAs to return the root CAs of the members")
+	}
+}
+
+func dialError() error {
+	return &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+}
+
+func TestConnectionPoolFailureAvoidanceFeatureGate(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
+			clientfeaturestesting.SetFeatureDuringTest(t, clientgofeaturegate.ClientsAllowConnectionPoolFailureAvoidance, enabled)
+			pool, _ := newFakePool(2)
+			if pool.avoidFailingMembers != enabled {
+				t.Errorf("expected avoidFailingMembers=%v, got %v", enabled, pool.avoidFailingMembers)
+			}
+		})
+	}
+}
+
+func TestConnectionPoolAvoidsMembersFailingToConnect(t *testing.T) {
+	for _, avoid := range []bool{true, false} {
+		t.Run(fmt.Sprintf("avoidFailingMembers=%v", avoid), func(t *testing.T) {
+			pool, fakes := newFakePool(2)
+			pool.avoidFailingMembers = avoid
+			pool.clock = testingclock.NewFakePassiveClock(time.Now())
+			fakes[0].err = dialError()
+			// Member 1 has a request in flight, so without failure avoidance
+			// the failing member 0 is always less loaded.
+			pool.members[1].inFlight.Store(1)
+
+			for range 10 {
+				if resp, err := pool.RoundTrip(newPoolTestRequest(t)); err == nil {
+					_ = resp.Body.Close()
+				}
+			}
+			wantFailed := 10
+			if avoid {
+				wantFailed = 1
+			}
+			if fakes[0].calls != wantFailed {
+				t.Errorf("expected %d requests to the failing member, got %d", wantFailed, fakes[0].calls)
+			}
+		})
+	}
+}
+
+func TestConnectionPoolAvoidsOnlyConnectionFailures(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, tc := range map[string]struct {
+		err         error
+		ctx         context.Context
+		wantAvoided bool
+	}{
+		"connection refused":   {err: dialError(), wantAvoided: true},
+		"dial timeout":         {err: &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, wantAvoided: true},
+		"connection reset":     {err: &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}},
+		"request failed":       {err: errors.New("stream error: stream ID 3; INTERNAL_ERROR")},
+		"request was canceled": {err: dialError(), ctx: canceled},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool, fakes := newFakePool(2)
+			pool.avoidFailingMembers = true
+			pool.clock = testingclock.NewFakePassiveClock(time.Now())
+			pool.intn = func(int) int { return 0 } // compare members 0 and 1, ties go to member 0
+			fakes[0].err = tc.err
+			req := newPoolTestRequest(t)
+			if tc.ctx != nil {
+				req = req.WithContext(tc.ctx)
+			}
+			if _, err := pool.RoundTrip(req); err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := pool.failedRecently(pool.members[0]); got != tc.wantAvoided {
+				t.Errorf("expected avoided=%v, got %v", tc.wantAvoided, got)
+			}
+		})
+	}
+}
+
+func TestConnectionPoolFailureAvoidanceExpires(t *testing.T) {
+	pool, fakes := newFakePool(2)
+	pool.avoidFailingMembers = true
+	clock := testingclock.NewFakePassiveClock(time.Now())
+	pool.clock = clock
+	pool.intn = func(int) int { return 0 } // compare members 0 and 1, ties go to member 0
+	fakes[0].err = dialError()
+	if _, err := pool.RoundTrip(newPoolTestRequest(t)); err == nil {
+		t.Fatal("expected an error")
+	}
+	if !pool.failedRecently(pool.members[0]) {
+		t.Fatal("expected member 0 to be avoided after a connection failure")
+	}
+
+	clock.SetTime(clock.Now().Add(connectionFailureBackoff))
+	if pool.failedRecently(pool.members[0]) {
+		t.Error("expected member 0 not to be avoided after the backoff")
+	}
+}
+
+func TestConnectionPoolFailureAvoidanceClearedOnSuccess(t *testing.T) {
+	pool, fakes := newFakePool(2)
+	pool.avoidFailingMembers = true
+	pool.clock = testingclock.NewFakePassiveClock(time.Now())
+	pool.intn = func(int) int { return 0 } // compare members 0 and 1, ties go to member 0
+	fakes[0].err = dialError()
+	if _, err := pool.RoundTrip(newPoolTestRequest(t)); err == nil {
+		t.Fatal("expected an error")
+	}
+
+	// Make member 1 avoided too, so that member 0 is picked again.
+	fakes[0].err = nil
+	pool.members[1].failedUntil.Store(pool.clock.Now().Add(time.Hour).UnixNano())
+	resp, err := pool.RoundTrip(newPoolTestRequest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if fakes[0].calls != 2 {
+		t.Fatalf("expected the second request to go to member 0, got %d calls", fakes[0].calls)
+	}
+	if pool.failedRecently(pool.members[0]) {
+		t.Error("expected a successful request to clear the connection failure")
 	}
 }
