@@ -63,6 +63,14 @@ const (
 	// Disabling it restores a single shared transport per config.
 	ClientsAllowConnectionPool Feature = "ClientsAllowConnectionPool"
 
+	// owner: @mborsz
+	// beta: v1.38
+	//
+	// If enabled, a connection pool (see ClientsAllowConnectionPool) avoids, for a short time,
+	// members that failed to connect to the server, so that they don't attract more traffic
+	// than the healthy members.
+	ClientsAllowConnectionPoolFailureAvoidance Feature = "ClientsAllowConnectionPoolFailureAvoidance"
+
 	// owner: @enj
 	// beta: v1.36
 	//
@@ -127,6 +135,9 @@ var defaultVersionedKubernetesFeatureGates = map[Feature]VersionedSpecs{
 		{Version: version.MustParse("1.32"), Default: false, PreRelease: Alpha},
 	},
 	ClientsAllowConnectionPool: {
+		{Version: version.MustParse("1.38"), Default: true, PreRelease: Beta},
+	},
+	ClientsAllowConnectionPoolFailureAvoidance: {
 		{Version: version.MustParse("1.38"), Default: true, PreRelease: Beta},
 	},
 	ClientsAllowTLSCacheGC: {
