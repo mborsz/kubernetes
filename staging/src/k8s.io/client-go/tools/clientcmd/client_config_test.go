@@ -300,6 +300,49 @@ func TestDisableCompression(t *testing.T) {
 	matchBoolArg(true, actualCfg.DisableCompression, t)
 }
 
+func TestMinConnectionPoolSize(t *testing.T) {
+	kubeconfig := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: clean
+  cluster:
+    server: https://localhost:8443
+    min-connection-pool-size: 4
+contexts:
+- name: clean
+  context:
+    cluster: clean
+current-context: clean
+`)
+	config, err := Load(kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchIntArg(4, int(config.Clusters["clean"].MinConnectionPoolSize), t)
+
+	// Writing and loading the kubeconfig again keeps the value.
+	written, err := Write(*config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err = Load(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchIntArg(4, int(config.Clusters["clean"].MinConnectionPoolSize), t)
+
+	restConfig, err := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil).ClientConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	matchIntArg(4, restConfig.MinConnectionPoolSize, t)
+
+	config.Clusters["clean"].MinConnectionPoolSize = -1
+	if err := Validate(*config); err == nil {
+		t.Error("expected a validation error for a negative min-connection-pool-size")
+	}
+}
+
 func TestInsecureOverridesCA(t *testing.T) {
 	config := createCAValidTestConfig()
 	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{

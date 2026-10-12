@@ -100,6 +100,11 @@ type Cluster struct {
 	// compression (server-side) and decompression (client-side): https://github.com/kubernetes/kubernetes/issues/112296.
 	// +optional
 	DisableCompression bool `json:"disable-compression,omitempty"`
+	// MinConnectionPoolSize, if greater than 1, spreads requests to the server across at least this many independent
+	// connections, preferring the one with fewer requests in flight. More connections may be opened, for example when a
+	// connection reaches the server's limit of concurrent HTTP/2 streams. Values <= 1 keep the default behavior.
+	// +optional
+	MinConnectionPoolSize int32 `json:"min-connection-pool-size,omitempty"`
 	// Extensions holds additional information. This is useful for extenders so that reads and writes don't clobber unknown fields
 	// +optional
 	Extensions map[string]runtime.Object `json:"extensions,omitempty"`
